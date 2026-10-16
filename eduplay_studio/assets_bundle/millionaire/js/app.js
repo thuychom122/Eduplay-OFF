@@ -140,7 +140,8 @@ function initGame() {
       correct_answer: cAns,
       incorrect_answers: source[i].incorrect_answers,
       time_limit: parseInt(source[i].time_limit || (window.DEFAULT_QUESTION_TIME || 60), 10),
-      explanation: (source[i].explanation || source[i].explain || "")
+      explanation: (source[i].explanation || source[i].explain || ""),
+      image: (source[i].image || source[i].image_base64 || source[i].imageBase64 || "")
     };
     questions.push(qObj);
   }
@@ -936,6 +937,26 @@ function loadQuestion(qObj) {
           q = 'Câu ' + actualLevel + ': ' + s;
         } catch(e){}
         qText.html(q);
+        try {
+          var imgWrap = document.getElementById('questionImageWrap');
+          var imgEl = document.getElementById('questionImage');
+          var imgSrc = (qObj && (qObj.image || qObj.image_base64)) ? String(qObj.image || qObj.image_base64) : '';
+          if (imgSrc && imgWrap && imgEl) {
+            imgEl.src = imgSrc;
+            imgWrap.classList.add('has-image');
+            imgWrap.style.display = 'block';
+            document.body.classList.add('has-question-image');
+            var gw = document.getElementById('gameWindow');
+            if (gw) gw.classList.add('has-question-image');
+          } else if (imgWrap) {
+            imgWrap.classList.remove('has-image');
+            imgWrap.style.display = 'none';
+            if (imgEl) imgEl.removeAttribute('src');
+            document.body.classList.remove('has-question-image');
+            var gw2 = document.getElementById('gameWindow');
+            if (gw2) gw2.classList.remove('has-question-image');
+          }
+        } catch(e) {}
         a1Text.html(aMix[0]);
         a2Text.html(aMix[1]);
         a3Text.html(aMix[2]);

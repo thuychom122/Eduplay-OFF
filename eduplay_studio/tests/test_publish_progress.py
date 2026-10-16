@@ -56,6 +56,15 @@ class TestPublishProgress(unittest.TestCase):
         library_key = "ba805ea048fafe69620d391ede85e09218c128651c55464abb8462256624ff25"
         sample_asset = "data:image/png;base64,QUJDREVGRw=="
         sample_token = f"__EDUPLAY_ASSET__{hashlib.sha256(sample_asset.encode('utf-8')).hexdigest()[:24]}__"
+        # content_hash the seeder writes for this exact asset set
+        sample_content_hash = hashlib.sha256(
+            json.dumps(
+                {sample_token: sample_asset},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
 
         def _fake_get(url, *args, **kwargs):
             requested_urls.append(url)
@@ -83,10 +92,12 @@ class TestPublishProgress(unittest.TestCase):
                     return_value={
                         "profile": "fishing",
                         "key": library_key,
+                        "local_key": sample_content_hash,
                         "assets": {sample_token: sample_asset},
                         "manifest": {
                             "key": library_key,
                             "latest_key": library_key,
+                            "content_hash": sample_content_hash,
                             "versions": {
                                 library_key: {
                                     "key": library_key,

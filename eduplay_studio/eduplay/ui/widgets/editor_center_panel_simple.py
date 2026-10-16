@@ -1075,7 +1075,37 @@ class EditorCenterPanel(QWidget):
         self.question_updated.emit({'action': 'save', 'question': self.current_question})
             
     def delete_current_question(self):
-        """Delete the current question"""
+        """Delete the current question - có xác nhận để tránh xóa nhầm"""
+        if not self.current_question:
+            return
+        try:
+            from PySide6.QtWidgets import QMessageBox
+            from eduplay.core.i18n import I18n
+            from eduplay.core.settings_manager import SettingsManager
+            try:
+                lang = SettingsManager().get_language() or "en"
+            except Exception:
+                lang = "en"
+            try:
+                title = I18n.t("editor.left.delete_confirm_title", lang)
+            except Exception:
+                title = "Xác nhận xóa" if str(lang).lower().startswith("vi") else "Confirm delete"
+            qtext = ""
+            try:
+                qtext = str(self.current_question.get("question") or "").strip()
+            except Exception:
+                qtext = ""
+            preview = (qtext[:120] + "...") if len(qtext) > 120 else qtext
+            try:
+                template = I18n.t("editor.left.delete_confirm_message", lang)
+            except Exception:
+                template = "Bạn có chắc muốn xóa câu hỏi này?\n\n{question}" if str(lang).lower().startswith("vi") else "Are you sure you want to delete this question?\n\n{question}"
+            message = template.format(question=preview or ("Câu hỏi đang chọn" if str(lang).lower().startswith("vi") else "Selected question"))
+            from eduplay.ui.widgets.confirm_dialog import ask_confirm
+            if not ask_confirm(self, title, message, lang):
+                return
+        except Exception:
+            pass
         if self.current_question:
             payload = {
                 'action': 'delete',

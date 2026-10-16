@@ -1,0 +1,627 @@
+NHUNG CAI DUOC THEM/SUA TRONG PHIEN LAM VIEC NAY (EduPlay Studio)
+===============================================================================
+
+A. CHONG CRASH BAN EXE (dist/EduPlayStudio.exe mo len tu tat)
+--------------------------------------------------------------
+- Nguyen nhan chinh: exe build voi --windows-console-mode=disable nen khong
+  co console (sys.stdout = None), ma code goi print() khap noi -> print()
+  dau tien nem RuntimeError va app chet ngay lap tuc.
+- eduplay_studio/app.py:
+  + Tu thay stdout/stderr hong bang null-stream chiu loi.
+  + Cai sys.excepthook + threading.excepthook + faulthandler, ghi moi loi
+    khong bat duoc ra %LOCALAPPDATA%\EduPlayStudio\logs\crash.log
+    (kem file crash-NGAY.log).
+  + Boc main() de khi crash khoi dong thi hien hop thoai bao loi + duong
+    dan log thay vi tat im lang.
+- eduplay/core/asset_loader.py: nhan dien Nuitka frozen (sys.__compiled__
+  + ten exe) thay vi chi sys.frozen -> load resource dung thu muc exe.
+- build_release.bat: them huong dan mo crash.log khi exe tu tat.
+
+B. XUAT LEN WEB NHAN DIEN THEO MAY (khong ghi de len may khac)
+---------------------------------------------------------------
+- Moi may co device-id on dinh (node + user + MAC hash).
+- eduplay/core/export_service.py:
+  + _get_publish_device_id(), _get_publish_device_name().
+  + _fetch_published_game_meta(): doc entry /games/{key} dang co.
+  + _resolve_publish_key(): cung may publish lai -> ghi de dung key cu,
+    tra link cu (ke ca entry doi cu chua co owner nho uuid trong
+    project_id); ten da thuoc may khac -> tao key moi "ten-xxxxxx"
+    (suffix on dinh theo may+project, publish lai van 1 link), tuyet doi
+    khong ghi de; project moi duoc slug ten sach-dep.
+  + Tra ve (key, info) voi reused/conflict/base_slug; publish_to_firebase
+    luu owner_device_id/owner_device_name/owner_project_id vao meta va
+    tra them key_reused/name_conflict/base_slug.
+  + Them DATABASE_URL, PUBLISH_TTL_DAYS (=15), list_published_games(),
+    renew_published_game(), delete_published_game().
+  + scripts/publish_templates.py: seed template dung chung giu hanh vi
+    ghi de (allow_overwrite=True).
+- Dialog publish (main_window): hien dong giai thich khi phai tao link
+  rieng do ten da bi may khac giu.
+
+C. KHONG CHO 2 PROJECT TRUNG TEN TREN 1 MAY
+-------------------------------------------
+- project_manager: normalize_project_name(), is_project_name_taken(),
+  ensure_unique_project_name(); create_project() mac dinh nem ValueError
+  khi trung (on_duplicate="suffix" cho luong tu dong: AI, import,
+  nhan ban -> tu thanh "Ten (2)"); duplicate_project() ten duy nhat.
+- Chan o form tao moi, doi ten (browser), lenh AI RENAME_PROJECT; import
+  file tu doi ten + thong bao.
+
+D. QUAN LY LINK DA XUAT BAN
+---------------------------
+- Dialog moi eduplay/ui/widgets/published_links_dialog.py: liet ke link
+  cua may nay (loc owner_device_id), hien so ngay con lai/han, nut
+  Copy / Mo / Gia han (+15 ngay) / Xoa (co xac nhan), co theme dark/light.
+- Nut "Links" moi tren header man hinh Duyet du an.
+
+E. QUET TRUNG TEN CU LUC MO APP
+-------------------------------
+- MainWindow.maybe_warn_duplicate_project_names() + goi trong app.py sau
+  khi hien cua so: canh bao 1 lan, chi hien lai khi danh sach doi.
+
+F. TEN MAY + NUT MO LOG TRONG SETTINGS
+--------------------------------------
+- SettingsManager.get_device_name()/set_device_name() (mac dinh = ten may
+  Windows); luu vao meta moi lan publish.
+- Tab General them nhom "Thiet bi": o nhap ten may + nut "Mo thu muc log".
+
+G. UNDO/REDO TRONG EDITOR
+-------------------------
+- ProjectManager: stack snapshot questions (toi da 50 buoc): _push_undo(),
+  push_undo_snapshot(), undo(), redo(), can_undo()/can_redo(),
+  clear_history(); moc vao add/update/delete/duplicate (bo qua buoc thua).
+- EditorScreen (ca 3 editor ke thua): nut ↩ ↪ tren header + Ctrl+Z /
+  Ctrl+Y / Ctrl+Shift+Z; tu refresh trang thai; undo ca sua noi dung
+  roi Luu.
+
+H. SUA LOI MAT STYLE GAME (template quiz)
+-----------------------------------------
+- .intro-card{ bi lap 2 lan trong CSS template lam chet CSS phia sau
+  (nut dap an trong suot, HUD vo layout, man hinh ket thuc/lightbox loi
+  ra). Da xoa dong thua; kiem tra can bang brace ca 3 loai game.
+- Them test hoi quy tests/test_export_css_balance.py.
+
+I. I18N DU 5 NGON NGU + THEME
+-----------------------------
+- Quet 545 key I18n.t(): du 100% en/vi/fr/es/de.
+- Them 36 key moi x 5 ngon ngu (links.*, browser.links,
+  browser.import_renamed, settings.device/device_name/device_hint/
+  open_log_folder, project.duplicate_*/dup_scan_*, publish.conflict_note,
+  editor.undo_tip/redo_tip) + thay text cung bang key o 7 cho.
+- Dialog Links co stylesheet dark/light; nut undo/redo doi mau theo theme.
+
+J. TEST
+-------
+- Moi: tests/test_undo_redo_and_links.py (10 test: undo/redo, trung ten,
+  resolver key, list/renew/delete, device name, i18n keys).
+- Moi: tests/test_export_css_balance.py (2 test).
+- Sua hygiene test_duplicate_project_and_question.py (mock export tranh
+  race thread preview nen khi don thu muc tam).
+- Ket qua: 109 test lien quan PASS; suite san cua repo (80 test) PASS;
+  smoke UI headless 20/20 PASS (dialog Links list/renew/delete, Settings
+  luu ten may, nut Links, undo/redo tren editor that).
+
+CAN LAM SAU KHI NHAN BAN NAY: build lai exe bang build_release.bat roi
+mo game kiem tra style; publish lai cac link cu (cung may se giu link cu).
+
+===============================================================================
+PHIEN 2 (6 muc duoc chon)
+===============================================================================
+
+K. TU GIA HAN LINK SAP HET HAN
+------------------------------
+- ExportService.auto_renew_soon_expiring(): liet ke link cua may, gia han
+  cai nao con <3 ngay (ke ca vua het han nhung van con tren server), toi
+  da 20 link/lan, khong bao gio nem.
+- MainWindow.auto_renew_expiring_links() chay nen luc mo app (qua
+  _run_background_task, khong chan UI); chi hien thong bao khi co link
+  duoc gia han (publish.autorenew_title/message).
+- i18n: publish.autorenew_title/message x 5 ngon ngu.
+
+L. BACKUP XOAY VONG FILE .EDUPLAY
+---------------------------------
+- ProjectManager.save_project(): truoc khi ghi de, copy ban hien tai vao
+  <project>/backups/<id>_YYYYMMDD_HHMMSS.eduplay; throttle 10 phut/project;
+  giu 5 ban moi nhat, tu xoa ban cu.
+- load_project(): file chinh loi -> tu khoi phuc tu backup moi nhat hop le,
+  nap vao current, ghi nhan _last_restore_info.
+- get_all_projects(): file loi duoc khoi phuc am tham roi moi dua vao danh
+  sach; ten gom vao pop_restored_names().
+- UI: MainWindow._maybe_notify_backup_restore() (moi duong mo project),
+  browser load_projects (quet danh sach) -> canh bao + notification 1 lan.
+- i18n: project.backup_restored_title/message/list x 5 ngon ngu.
+
+M. TRANG WEB THAN THIEN KHI MAT LINK
+------------------------------------
+- firebase_viewer.html: them renderMissingPage() + prettyNameFromSlug() +
+  bang chu vi/en/fr/es/de theo ngon ngu trinh duyet.
+- Het han (qua expires_at) -> the hien "Link da het han" + ten bai that;
+  khong tim thay -> "Khong tim thay bai" + ten doan tu slug; ca 2 hien link,
+  nut Copy link, nut Thu lai, dong huong dan gui link cho nguoi tao de nho
+  gia han. Kiem tra cu phap JS bang node: OK.
+- LUU Y: file nay nam tren Firebase Hosting, sua source chua du -> can
+  chay lai deploy hosting (deploy_firebase_hosting.py + firebase deploy)
+  de len production.
+
+N. DIALOG XAC NHAN TRUOC KHI PUBLISH
+------------------------------------
+- handle_publish_web tach 2 phase: phase 1 (nen) export HTML + tinh tom tat
+  (so cau, dung luong, resolve truoc link se dung); phase 2 upload.
+- MainWindow._confirm_publish(): dialog themed dark/light hien ten bai, so
+  cau, dung luong, link se dung, trang thai (ghi de link cu / tao link moi /
+  ten bi may khac giu / khong kiem tra duoc), ghi chu han 15 ngay + tu gia
+  han; nut Xuat ban/Huy. Huy thi xoa file tam, khong upload.
+- i18n: publish.confirm_title/confirm_ok/row_name/row_questions/row_size/
+  row_link/row_status/status_overwrite/status_new/status_conflict/
+  status_unknown/expiry_note x 5 ngon ngu.
+
+O. DIALOG LINKS: COT MAY + TIM KIEM
+-----------------------------------
+- Them cot "May" (owner_device_name, fallback id rut gon) + o tim kiem loc
+  theo ten/link/may/key; style QLineEdit theo theme.
+- i18n: links.col_machine, links.search_placeholder x 5 ngon ngu.
+
+P. UNDO MO RONG (rename + game config)
+--------------------------------------
+- Snapshot undo doi sang full-state {questions, game_config, name,
+  description} (deepcopy day du, khong mat media base64); gioi han 30 buoc,
+  bo qua buoc trung.
+- Moi: push_undo_state(), rename_project() (kiem tra trung + undo duoc),
+  update_game_config() tu push.
+- Editor _apply_game_config_to_project() push truoc khi tron config;
+  browser doi ten + AI UPDATE_PROJECT doi sang dung rename/push (moi lan
+  sua AI chi 1 buoc undo).
+- Test: tests/test_session6_features.py (14 test: auto-renew, backup
+  ghi/xoay/khoi phuc, undo rename/config, confirm dialog accept/reject/
+  conflict, cot may + tim kiem, viewer, i18n keys moi).
+- Ket qua vong nay: 186/186 test PASS (gom ca test cu).
+
+===============================================================================
+PHIEN 3: BO NHO AI VIET LAI TRIET DE
+===============================================================================
+- LONG-TERM (profile, toi da 800 ky tu): CHI dac diem nguoi dung (ten,
+  tuoi, vai tro, so thich, phong cach...), ngan gon dang "a | b | c".
+  KHONG ghi chi tiet da lam/chua lam gi. Trich bang menh de: tach tin
+  thanh menh de, giu menh de co tin hieu profile, loai menh de task
+  (vd "toi la giao vien, hay tao 5 cau hoi" -> chi giu "toi la giao vien").
+  Bo sung pattern ten/tuoi 5 ngon ngu ("toi ten X", "my name's X",
+  "j'ai N ans", "tengo N años"...).
+- SESSION (ngan han): 5 tin nhan NGUOI DUNG gan nhat, KHONG tinh tin AI
+  (tin AI/system khong luu nua). Trong phien khong tu tom tat.
+- end_session(): tom tat session vao profile TRUOC (dedup, cat 800 ky tu),
+  roi xoa sach session, luu file. closeEvent goi end_session().
+- Tuong thich: giu API cu (add_message/add_user_message/add_ai_message
+  no-op, get_recent/get_summary/get_context_for_ai, _summarize_into_memory,
+  payload van co key "summary"/"recent"); file cu tu migrate (summary loc
+  rac, recent cu chi lay tin user).
+- Test: them 6 test moi vao tests/test_memory_manager.py (session user-only,
+  cap 5 tin, end_session tom tat truoc xoa sau, loc menh de task, dong 2 lan
+  khong trung, migrate file cu). Ket qua: 12/12 PASS.
+- GHI NHAN: test_ai_gateway_device_auth.test_chat_messages_retries_while_
+  server_is_waking_up dang FAIL san (thieu chu "khoi dong" trong progress),
+  do diff ai_service.py co san truoc phien nay, khong lien quan memory.
+
+===============================================================================
+PHIEN 4: DEP + HOVER + CRASH PUBLISH + RESET AI
+===============================================================================
+- Chuan doan crash khi publish (log thay worker phase-2 chet sau progress
+  cuoi ma khong kip finished): them breadcrumb _run_log() ghi moi buoc ra
+  %LOCALAPPDATA%/EduPlayStudio/logs/run.log (tu xoay 512KB); worker ghi
+  start/finish/emit + traceback loi; _finalize ghi loi on_finished.
+- Tach cleanup_firebase_old ra khoi worker upload: hien dialog link truoc,
+  cleanup chay fire-and-forget sau (duong gang nhe hon, thay link nhanh hon).
+- Khoa thread-safe cho firebase_admin.initialize_app (_firebase_ensure_app,
+  dung o ca 5 cho init) vi phase preview + upload chay 2 thread khac nhau.
+- LAN SAU NEU CON CRASH: mo run.log + crash.log xem dong cuoi de biet chet
+  o buoc nao (upload begin/returned, cleanup begin/done, worker emit...).
+- Redesign dialog xac nhan xuat ban: header band + badge, the trang thai
+  mau theo loai (ghi de xanh la / link moi xanh duong / link rieng cam /
+  xam), o link + nut Copy (doi dau ✓ 1.2s), footer dep, hover day du.
+- Fix hover nut moi: selector QPushButton:hover:!disabled khong ton tai
+  trong Qt (rule bi drop) -> doi sang :hover o ca 2 theme nut undo/redo.
+- tools/reset_ai_state.py (moi): xoa ai_memory.json (APPDATA + Documents),
+  ai_proxy_token.txt, key ai_memory + device_auth trong settings.json (giu
+  cau hinh server + api key tu nhap). DA CHAY tren may: xoa 3 file + reset
+  settings de test lai tu dau.
+- Test: 81/81 PASS (session6, publish, undo/redo, memory, editor, quick).
+
+===============================================================================
+PHIEN 5: DIEU TRA CRASH SAU PUBLISH (log moi cho thay worker upload finish
+nhung worker cleanup vua started thi chet -> tinh nghi cleanup) + REDESIGN
+===============================================================================
+- Them cong tac EDUPLAY_SKIP_CLEANUP=1 de bo qua cleanup (chan doan).
+- Redesign dialog xac nhan: header band + badge, pill trang thai mau,
+  o link + nut Copy, footer dep, hover day du.
+- Fix hover: selector :hover:!disabled khong ton tai trong Qt -> :hover.
+
+===============================================================================
+PHIEN 6: FIX DIALOG LINKS 401 (Firebase chan doc nan danh) + RESET AI DA CHAY
+===============================================================================
+- tools/reset_ai_state.py (moi): xoa ai_memory.json (APPDATA + Documents),
+  ai_proxy_token.txt, key ai_memory + device_auth trong settings.json (giu
+  cau hinh server + api key tu nhap). DA CHAY tren may: xoa 3 file + reset.
+- Nguyen nhan dialog Links trang: Firebase bat xac thuc doc (REST tran tra
+  401), trong khi publish dung Admin SDK nen van duoc. Sua
+  list/renew/delete uu tien Admin SDK (_admin_db_reference, lock
+  thread-safe), fallback REST + thong bao ro neu 401/403.
+- Test: 36/36 PASS + them test Admin-first.
+
+===============================================================================
+PHIEN 8: LUOI CHONG CRASH TOAN DIEN + POLISH GIAO DIEN
+===============================================================================
+- EduPlayApp.notify() catch-all: moi exception trong slot/event Qt deu ghi
+  crash.log, app chay tiep (dung QApplication.notify tuong minh, khong dung
+  super() de tranh loi __class__ cell). Them sys.unraisablehook.
+- AI loi luc khoi dong KHONG exit(1) nua: canh bao roi van mo app offline
+  (Edubot tu bao chua san sang; main_window da co duong lui san).
+- Audit: sys.exit con lai chi trong template game Pygame sinh ra + tien
+  trinh preview con (QProcess rieng) -> an toan; thread/initializer Firebase
+  da lock; dialog chay main-thread.
+- Font app: Times New Roman 13 -> Segoe UI 11 (hop theme QSS san).
+- Quet chet 14 selector stylesheet vo hieu: :hover:!disabled (nut undo/redo),
+  :hover:!selected (dropdown, tab, list khap app + ca 2 file theme QSS) ->
+  ve :hover/:enabled hop le (hover lai co tac dung).
+- Pressed cho nut chinh: header editor (luu/xem/truoc/web/html/undo/redo),
+  header browser (quay lai/nhap/lam moi/links), 3 nut card trang chu,
+  dialog xac nhan/links/help + dialog doi ten/the/xoa, focus vien tim cho
+  o nhap. Card trang chu hover them nen sang.
+- Test moi tests/test_crash_safety.py (notify bat loi + ghi log, khong exit
+  khi AI loi, run.log xoay file). Ket qua: 204/204 PASS.
+
+===============================================================================
+PHIEN 7: CAP NHAT TRO GIUP + MUC MEO MOI
+===============================================================================
+- Dialog Tro giup co muc thu 7 "Meo" (icon 💡), noi dung 7 meo an/tinh nang
+  it nguoi biet: phim tat undo/redo/tim nhanh, link tu gia han + quan ly
+  Links, backup tu khoi phuc, ten duy nhat, xem nhanh vs xem truoc, nhap
+  Word/Excel, tri nho Edubot, crash.log.
+- Sua doan loi thoi trong Xem truoc & Xuat (bao ghi de link cu): viet lai
+  phan xuat web (bang xac nhan, ghi de cung may vs link rieng may khac,
+  han 15 ngay + tu gia han, muc Links, trang het han than thien).
+- Tao du an: them Phan 3 (ten duy nhat, undo Ctrl+Z/Y, backup tu dong).
+- Edubot: them Phan 3 (tri nho dai han theo dac diem + theo phien 5 tin,
+  dong app la tom tat roi xoa, lenh "xoa bo nho").
+- Tong quan: them the "Nhung diem moi can biet".
+- Tat ca du 5 ngon ngu (en/vi/fr/es/de); test hoi quy: keys + noi dung
+  + render dialog du 7 muc (16/16 PASS).
+
+===============================================================================
+PHIEN 9: TIM RA NGUYEN NHAN CRASH THAT + XOA 2 LOI HOI QUY
+===============================================================================
+- Crash "Tcl_AsyncDelete: async handler deleted by the wrong thread" (app
+  tat ngay sau khi xuat xong) DA TIM RA GOC R:
+  * Splash khoi dong chay Tk tren 1 thread daemon (de hien som truoc khi
+    import PySide6 nang).
+  * _play_finish() goi root.quit() BEN TRONG after-callback cua Tk.
+  * Tk_Quit() goi tu timer callback tren thread KHONG phai main lam Tcl mat
+    rang async handler -> khi process tat, Tk in loi nay roi abort (0x80000003).
+  * Da co bien the: chi duong co finish() la hong; duong atexit (abort) thi
+    an toan -> chung to loi nam dung choi).
+- Cach sua (giu nguyen hien thi som):
+  1. Bo root.quit() khoi _play_finish; chi return. Pump het len reschedule
+     nen Tk mainloop tu thoat binh thuong, roi finally cua thread splash
+     moi destroy root tren DUNG thread do.
+  2. Them _abort_and_join() + atexit: neu app ket thuc khong di qua finish(),
+     yeu thread splash dung vong lap va destroy root truoc khi interpreter tat.
+  3. Bo fallback tkinter Tk() trong main() cua app.py: tao them Tk root o
+     main thread khi thread splash con song cung gay loi nay.
+- LUA CHON THU NGHIEM (de khong doan): Tk o thread phu + quit() trong
+  after-callback = hong; bo quit(), chi de mainloop tu thoat = sach.
+  Cai dat khac (defer root.update(), bo progressbar, bo logo) deu vo hai.
+- AI: nhanh "server dang khoi dong" bi thieu o nhanh retry cua chat (chi
+  register path co bao). Da bo sung -> het 4s im lang khi server thuc day.
+- Test cu: tests/test_crash_safety.py them 3 test chay SUBPROCESS kiểm tra
+  process thoat sach (returncode 0, khong co Tcl_AsyncDelete) cho ca 3 duong
+  finish / hide-reshow-finish / khong finish.
+- Test ho i quy (2 loi co san tu truoc, khong do thay doi nay):
+  + test_auto_points: chon cau da co chu dich bo rebalance+save de fix loi
+    nhay sai cau (Q10 -> Q9). Test cu yeu cau hanh vi da bi bo, nen viet lai:
+    chon cau khong doi diem/khong save, va them 2 test cho _rebalance_project
+    _question_points (chia deu 100/3 = 34/33/33; auto_points off = no-op).
+  + test_ai_gateway: xem muc AI o tren.
+- KET QUA: chay day du 350/350 PASS, process exit 0, het Tcl_AsyncDelete.
+
+===============================================================================
+PHIEN 10: SUA ICON O VUONG + NEN CHU KHONG DOI THEO HOVER
+===============================================================================
+- Icon "▯" truoc tieu de Trợ giúp: 7 muc dung emoji (🧭🖥️📁🤖🚀📊💡) de
+  TRUC TIEP trong text cua QListWidgetItem. Font app dang dung la
+  "Times New Roman" (mac dinh settings) khong co glyph emoji va Qt khong
+  fallback khi stylesheet ep font-weight:700 -> hien o vuong.
+- Sửa: vẽ emoji ra pixmap/icon voi font rieng "Segoe UI Emoji" (dung dung
+  cach app.py da lam cho nut ?/banh rang) thay vi de trong text.
+  + icon_factory.py: them build_emoji_icon(text, color, size, font_family)
+    co fallback Segoe UI Emoji -> Segoe UI Symbol -> Segoe UI.
+  + main_window.py: nav item chi con text, icon set bang item.setIcon();
+    tieu de ben phai lay pixmap cung ham.
+  + 2 nut "⬇️ Mẫu DOCX / Mẫu Excel" cung bi o vuong (i18n chua co key ->
+    dung fallback co emoji): bo emoji khoi text, gan icon vector.
+- Hover card trang chu khong "boc" nen cua chu: #card-description to nen
+  card_bg nen khi hover card doi nen mau, khoang mo ta van giu nen cu ->
+  loi o giua. Da doi #card-description sang background transparent (nghi
+  trang chu phai nen nen, nen nghi khong doi gi, hover la doi deu).
+- GHI CHU FONT: app hien dung font serif vi settings_manager.py dat mac
+  dinh font_family = "Times New Roman" va _apply_global_accessibility_font()
+  dung gia tri do de len font app. Chua doi (doi se doi toan bo nhin app) -
+  doi Settings > Font Family sang "Segoe UI" neu muon sans-serif.
+- Test moi: muc tro giup khong con emoji trong text va phai co icon that.
+- Ket qua: 351/351 PASS.
+
+===============================================================================
+PHIEN 11: VANG O VUONG LAN 2 - EMOJI TRONG NOI DUNG + TIEU DE MAT CHU
+===============================================================================
+- Danh sach muc (trai) da hien icon emoji mau dung. Con 2 loi:
+  1. Emoji nam TRONG NOI DUNG HTML (i18n help.sections.*.content vd "📥 Nhap
+     lieu nhanh", "💬 Khi app tat dot ngot") do QTextBrowser ve bang font dang
+     dung (Times New Roman) -> khong co glyph -> o vuong.
+     Sua: stylesheet QTextBrowser ghep chuoi font
+     "<font dang dung>, 'Segoe UI Emoji', 'Segoe UI Symbol', 'Segoe UI', sans-serif"
+     de Qt tu fallback sang font co glyph cho ky tu emoji.
+  2. Tieu de ben phai mat chu: QLabel.setPixmap() XOA text cua QLabel, nen chi
+     con icon. (Loi do chinh ta moi lam khi gan icon.)
+     Sua: tach thanh widget QWidget + QHBoxLayout gom 1 QLabel icon + 1 QLabel
+     chu, khong dung setPixmap tren QLabel chu.
+- Test moi: bat dialog that (mock QDialog.exec de lay instance) va assert
+  tieu de van con chu "Tổng quan"/"Mẹo"/"Edubot (AI)".
+- Ket qua: 352/352 PASS.
+
+===============================================================================
+PHIEN 12: LAM LAI TOAN BO TRO GIUP + BAT O VUONG LAN CUOI
+===============================================================================
+- O vuong con lai: ky tu U+1F6DF (RING BUOY) trong tieu de "Khi app tat dot
+  ngot". Segoe UI Emoji cua Windows THIEU glyph nay (cac emoji khac trong cung
+  noi dung van hien binh) -> thay bang ⚠. Da kiem tra ca 5 ngon ngu.
+- VAY TAI LIEU DOC NHU LOG GHI THAY DOI. Nguyen nhan:
+  1. Moi muc lap lai khoi "Phan 1 - Gioi thieu" / "Phan 2 - Huong dan chi
+     tiet" / "Phan 3 - Tinh nang nang cao" (52 tieu de rong trong tieng Viet).
+  2. Danh sach muc lay theo TINH NANG, khong theo VIEC nguoi dung lam.
+  3. Mau hex hardcode trong HTML (21 mau) -> chet khi len theme toi.
+  4. Emoji bi lap ("💡 📌", "📂 📌") 19 cho.
+- Da sua (scripts/refresh_help_content.py chay lai duoc):
+  + Bo "Phan N — ..." thua, bo tieu de rong, gop emoji trung.
+  + Doi 21 mau hex -> token {{fg}} {{muted}} {{surface_ok}} {{accent}}...
+    va doi runtime theo theme trong show_help() (help_palette). Noi dung bay
+    hien dung o ca theme sang va toi.
+  + Doi bo cuc: 7 muc "tinh dang co gi" -> 12 muc theo CONG VIEC, co nhom:
+      * Bắt đầu        : Bắt đầu nhanh
+      * Soạn & nhập câu: Soạn câu hỏi, Nhập câu hỏi, Thư viện Media
+      * Quản lý dự án : Duyệt dự án
+      * Chơi thử & chia sẻ: Xem trước & Chơi, Xuất bản, Tiện ích PowerPoint
+      * Thêm           : Edubot, Cài đặt, Phím tắt, Xử lý sự cố
+    Nhom la dong khong chon duoc (NoItemFlags), danh sach mo moc vao muc
+    "Bắt đầu nhanh".
+  + Muc "Mẹo" (ghi chu thay doi) bi lo khoi danh sach; noi dung rat vay
+    chuyen sang dung muc rieng.
+- Test moi: 12 muc that + >=4 nhom; nhom phai co nhan i18n that; noi dung
+  khong con tieu de rong; khong con hex hardcode; khong dung emoji thieu glyph.
+- Ket qua: 356/356 PASS.
+
+===============================================================================
+PHIEN 13: PHAN BIET DONG NHOM VOI DONG MUC TRONG TRO GIUP
+===============================================================================
+- Nguyen nhan nhom khong doi kieu muc: Qt KHONG ho tro property selector cho
+  tung item cua QListWidget trong stylesheet. Rule
+  `QListWidget::item[groupHeader="true"]` bi bo qua nen nhom van ve dung
+  the o cua muc (co nen, co vien, cung co ch).
+- Sua bang delegate tu ve (khong phai stylesheet):
+  + File moi eduplay/ui/widgets/help_nav_delegate.py (HelpNavDelegate).
+  + Dong nhom: chu nho in HOA, mau accent, giam 1pt, letter-spacing, KHONG
+    khung/nen, them duong gach ngan duoi; cao hon dong muc.
+  + Dong muc: giao cho super().paint() ve binh thuong the QSS hien tai.
+  + Nhom luon khong chon duoc (NoItemFlags) va data role rieng GROUP_ROLE.
+  + Tat cuon ngang cua danh sach muc (khong can, gay thanh den).
+- Kiem chung bang MAT: them scripts/render_help_dialog.py chay offscreen,
+  grab() hop thoai roi luu PNG (light/toi) de so bang mat thay vi doan.
+- Test moi: danh sach phai dung HelpNavDelegate va dong nhom cao hon dong muc.
+- Ket qua: 357/357 PASS.
+
+===============================================================================
+PHIEN 14: KIEM CHUNG HUONG DAN + BO SAI + TAI LIEU .MD + BO TK KHOI SPLASH
+===============================================================================
+A. KIEM CHUNG NOI DUNG HUONG DAN SOI CODE (scripts/fix_help_accuracy.py)
+- Tim ra cac tuyen bo SAI:
+  1. "Ctrl+S - Luu": app KHONG gan phim nay (chi gan Ctrl+K, Ctrl+T,
+     Ctrl+Z, Ctrl+Y, Ctrl+Shift+Z). -> xoa, bo sung nhom undo/redo that.
+  2. "Bam Esc de thoat choi toan man hinh": app khong bat Esc o player
+     (chi screenshot_overlay bat). -> xoa.
+  3. "Xuat EXE/Native": chi co handler o editor_screen + nut trong panel
+     `_simple` KHONG duoc dung -> khong co nut nao mo ra. -> xoa khoi ca
+     5 ngon ngu (ke ca muc an).
+  4. F5 / Shift+F5 la phim cua POWERPOINT, khong phai cua app -> ghi ro.
+  5. Nhap .txt: hop thoai chon file hua .txt nhung import_service bo qua
+     (raise unsupported) -> DA SUA CODE them route .txt vao dispatcher.
+  6. Nhap .pdf: co that nhung chua duoc ghi -> bo sung vao tai lieu.
+  7. Ten nut sai so voi hien thi that: "Xuat HTML" -> "Xuat noi bo (HTML)";
+     "+ Them" -> "Them cau hoi"; "Xem nhanh (con mat)" -> "Xem cau chon";
+     "bam Luu" -> "Luu cau hoi".
+- DA KIEM CHUNG DUNG: so loai cau hoi (5, khop combobox editor_center_panel),
+  TTL link 15 ngay (PUBLISH_TTL_DAYS), email ho tro, ten nut Ribbon
+  "HTML Frame" (dung nhu tai lieu), so lenh Edubot (89 alias -> "50+ việc"
+  dung), tri nho 5 tin nhung phien.
+- Test moi tests/test_help_truthfulness.py (9 test): chan ghi phim khong gan,
+  chan quang ca EXE, chan Esc, kiem TTL + dinh dang nhap + so loai cau hoi
+  khop code. Loi doc ~ nua giup se FAIL neu tai lieu lech code.
+
+B. SPLASH: BO SAI -> HOAN NGUYEN GIAO DIEN GOC
+- Da viet lai splash bang Win32 GDI (ctypes) de loai bo Tk. Hinh anh tren
+  may THAT lai rat xau, khac het phong cach giao dien, va bi chan de gia dien
+  cua app. -> HOAN NGUYEN ve ban Tk goc (giao dien nhu cu).
+- Giu nguyong 2 lop an toan da them (khong lam doi hinh thuc):
+  1. _play_finish() khong goi root.quit() (goc Tcl_AsyncDelete + abort).
+  2. _abort_and_join() + atexit de splash luon ket thuc tren dung thread.
+- BANG CHUNG: voi Tk goc + 2 lop an toan + ban va test_zz_teardown.py, ca
+  suite thoat sach: 368/368 PASS va EXIT=0 on dinh 3/3 lan.
+  => Crash khi thoat KHONG den tu giao dien splash ma den tu viec widget Qt
+  bi pha sau khi QApplication da chet; ban va test teardown moi la fix dung.
+- Test them: test_splash_never_calls_quit_inside_timer_callback dung ast de
+  cam lenh root.quit() trong code (docstring/comment khong anh huong).
+
+C. LOI CRASH KHI TEST SUITE TAT (khong phai cua app)
+- Ca 350+ test PASS nhung process chet 0xC0000005 dung luc interpreter tat:
+  nhieu test tao widget Qt roi khong huy, bi pha sau khi QApplication
+  chet. Chay tung nua deu OK -> chi can gop nhieu widget la lo.
+- Fix: tests/test_zz_teardown.py (chay cuoi cung theo ten 'zz') huy top-level
+  widget + xu ly DeferredDelete + gc.collect() truoc khi interpreter tat.
+- Ket qua: 368/368 PASS, EXIT=0 oan dinh.
+
+D. CAI TAT LIEU .MD
+- README: bo "Groq API / GROQ_API_KEY" (code da khong doc bien nay, AI di
+  qua gateway tu dang ky thiet bi) -> muc "Ket noi AI (khong can key)"; bo
+  muc Xuat Native/PyGame; them muc Xuat link web; sua 5 loai game; xoa meo
+  "F5 preview" (F5 khong gan trong app); xoa lien ket USER_GUIDE.md
+  (file khong ton tai) -> tro ve Tro giup trong app.
+- INSTALLATION: bo USER_GUIDE, bo phan key Groq, them trang thai server AI,
+  sua duong dan %LOCALAPPDATA%\EduPlayStudio, sua email ho tro.
+- SECURITY + TERMS OF USE: email `eduplay.line@hotmail.com` -> sai so voi
+  code (`support@eduplay-studio.io.vn`); them vi tri log that.
+- CHANGELOG: bo Native/PyGame + Groq API key, them import .pdf/.txt, undo/
+  redo, tro giup 5 ngon ngu, log chan crash; ghi ro EXE chua co nut.
+- ROADMAP: bo "Undo/redo 1.1" (da co o 1.0), them "mo lai nut Xuat EXE".
+- CONTRIBUTING: them muc Chay test (lenh unittest that, khong pytest),
+  quy tac i18n 5 ngon ngu + token mau + cam emoji thieu glyph, quy tac
+  "doi nhan/phim/tinh nang thi phai sua ca i18n va .md".
+- ppt_vsto_addin/README: them cau truc 3 project, lenh test xUnit, xac nhan
+  nut Ribbon "HTML Frame".
+
+===============================================================================
+PHIEN 15: SUA LAI KY TU RAC "[ó] 3 cách" TRONG TRO GIUP
+===============================================================================
+- Loi do TOI: trong scripts/fix_help_accuracy.py, phan thay the cua re.sub
+  la CHUOI LITERAL. Tôi viết "[âa]", "[êe]", "[ỏi]"... o phan thay the nen no
+  bi ghi thang vao noi dung -> man hinh hien "C[ó] 3 cách", "Th[êe]m c[âa]u
+  h[ỏi]", "b[ấa]m"...
+- Da sua: doi phan thay the sang KY TU THAT (chi dung [...] o phan MAU), va
+  them ARTIFACT_FIX de quet don cac ky tu rac da ghi nham (ke ca dang khong
+  dong ngoac "h[ỏi" do regex goc thieu dau "]").
+- Kiem tra: quet ca 5 ngon ngu, khong con ky tu rac nao (chi con "[...]" va
+  "[x+1]" la noi dung that).
+- Test moi test_help_content_has_no_broken_letters: quet noi dung help moi
+  ngon ngu, chan ca "ngoac rac" va "ngoac khong dong".
+- Ket qua: 369/369 PASS, EXIT=0 (chay lai 3 lan deu xanh).
+- GHI NHAN (chua sua, vi la loi tu Phien 7): 2 muc "Bắt đầu nhanh" va "Soạn
+  câu hỏi" trong FR/ES/DE van chua noi dung tieng Viet.
+
+===============================================================================
+PHIEN 16: DICH LAI 2 MUC + KIEM CHUNG TOAN BO NOI DUNG
+===============================================================================
+- Da dich 2 muc con sot tieng Viet sang fr/es/de:
+  "Bắt đầu nhanh" va "Soạn câu hỏi" (scripts/translate_help_sections.py).
+  Cach dich: thay THEO THU TU cac nut chu trong HTML goc -> giu nguyen 100%
+  the/bang/token mau, khong sinh HTML hong.
+- Script audit_help_language.py: quet key help.* cua 4 ngon ngu, tim cum
+  chua dich/con ngon ngu Viet. Hoan tat sau khi sua.
+- KIEM CHUNG SAI MOT LOI NUA VEXCEL:
+  * Help/tai lieu noi "Excel co them cot Loai cau hoi" -> SAI.
+    _create_sample_xlsx sinh cot: STT | Cau hoi | Dap an 1-4 | Giai thich,
+    KHONG co cot loai cau hoi. App TU DOAN loai tu noi dung (dau "==",
+    "trai = phai", "___"). -> sua ca 5 ngon ngu (import + templates).
+- Sua them nhan nut SAI trong ca 5 ngon ngu (scripts/fix_help_button_names.py):
+  Xem nhanh -> Xem câu chọn | Chơi -> CHƠI | Chỉnh thẻ -> Chỉnh sửa thẻ |
+  Cho phép truy cập Internet -> Cho phép AI tra cứu internet |
+  Cho phép tải ảnh -> ...về và gán vào câu hỏi | Đúng / Sai -> Đúng/Sai |
+  Điền chỗ trống -> Điền vào chỗ trống | Thư viện -> Thư viện Media |
+  Cài/Sửa -> Cài đặt.
+- Trong khi sua, phat hien them 3 nhan UI CHUA DUOC DICH o fr/es/de:
+  editor.center.save_question + editor.center.quick_preview ("Preview
+  Question"). -> da dich (Guardar pregunta / Enregistrer la question /
+  Frage speichern; Vista previa de la pregunta / Aperçu de la question /
+  Frage ansehen) va cap nhat test cho khop.
+- Script audit_help_button_names.py: bao cao cac cum in dam co khop ten nut
+  that cua app hay khong (cong cu, khong phai test).
+- Test moi trong test_help_truthfulness.py:
+  + test_help_does_not_claim_question_type_column
+  + test_help_button_labels_exist
+- Test cu test_editor_question_actions.py: bo hardcode tieng Anh cho 3 ngon
+  ngu, lay theo nhan da dich.
+- Ket qua: 371/371 PASS, EXIT=0.
+
+===============================================================================
+PHIEN 17: BIEN LOI KHUYEN NGHI THANH CANH BAO THAT TRONG APP
+===============================================================================
+- Y nguyen cua nguoi dung: cau "Anh moi cau nen duoi 1MB, bai tren 50 cau
+  nen tach nho" GIU LAI va lam no thanh thuc, khong chi la chu.
+  (Dinh chinh: cau nay da co san trong ca 5 ngon ngu - FR dung "1 Mo" nen
+  loi lan quet "1MB" bao nham thieu.)
+- File moi eduplay/core/perf_hints.py:
+  + IMAGE_SOFT_LIMIT_BYTES = 1 MB, QUESTIONS_SOFT_LIMIT = 50.
+  + format_size() dung chung cho ca 5 ngon ngu (1.4 MB / 900 KB / 512 B).
+  + image_size_warning(), many_questions_warning() tra ve chuoi da dich.
+- noi vao app:
+  + editor_center_panel: signal moi `notice = Signal(str)`.
+  + browse_image(): sau khi chon file, anh > 1 MB -> phat notice (KHONG
+    chan) + gan tooltip vao o duong dan.
+  + save_question(): bai > 50 cau -> phat notice, chi 1 lan/phan (bien
+    _perf_hint_shown trong panel).
+  + editor_screen: notice -> show_toast(kind="warning").
+- Test moi tests/test_perf_hints.py (12 test): format size, nguong 1MB,
+  nguong 50 cau, panel phat notice, im lang khi duoi nguong, va TRO GIUP
+  phai noi dung ca 2 moc nay o ca 5 ngon ngu.
+- Ket qua: 383/383 PASS, EXIT=0.
+
+===============================================================================
+PHIEN 18: LAM MOT THOI GIAN KHOI DONG + TON TRONG "GIAM CHUYEN DONG"
+===============================================================================
+- Do thuc te (importtime), khong doan:
+  * Import main_window: 2.02s -> 0.57s (nhanh ~3.5 lan).
+  * Thu vien bi nap o cap module chi de "co the" dung:
+    openpyxl 0.93s (+numpy), docx 0.13s, fitz 0.12s, cryptography 0.09s.
+  * Sau khi sua: khong con thu vien nang nao nap luc khoi dong; chi nap
+    khi nguoi dung bam Nhap khau / dung asset can giai ma.
+- Sua:
+  + import_service: bo 3 khoi try-import o cap module; dung
+    importlib.util.find_spec (khong import) de tinh DOCX/PDF/XLSX_AVAILABLE,
+    them _lazy_docx_document() / _lazy_fitz() / _lazy_load_workbook().
+  + asset_loader: AESGCM -> _aesgcm() nap lazy.
+  + Giu nguyen API: khac goi `from eduplay.core.import_service import
+    ImportService` nhu cu; co import nhap .doc/.pdf/.xlsx van binh thuong.
+- File moi eduplay/ui/motion.py:
+  * Phat hien: cau hinh accessibility.reduce_motion chi duoc doc o DUNG 1 cho
+    (animation credits) - moi hieu ung khac (intro, drawer, toast, coach
+    marks) van chay, va nguoi dung tat hieu ung van bi lag.
+  * motion_enabled() (cache 2s), ms() rut ngan thoi luong x1.25 hoac tra ve 0
+    khi tat hieu ung, set_opacity(), fade_widget() (bo qua animation, van
+    goi on_finished de logic khong ket).
+  * Noi vao main_window (intro overlay, drawer, credits, wipe...) va
+    editor_screen (toast hien/an): tat ca setDuration() lon di qua _motion_ms.
+- Test moi tests/test_startup_and_motion.py (10 test):
+  * App KHONG nap openpyxl/docx/fitz/cryptography luc mo.
+  * Co lai cho: tinh flag khong duoc import thu vien.
+  * Lazy helper that su nap dung khi goi.
+  * Canh bao neu import main_window cham > 3s.
+  * reduce_motion: ms() = 0 khi bat, rut ngan khi bat, fade bo qua animation
+    nhung van chay tiep, va 2 file UI phai dung motion helper.
+- Ket qua: 393/393 PASS, EXIT=0.
+
+===============================================================================
+PHIEN 19: LAM DEP HON - SUA HIEU UNG CHAY NGHEN VA 3 LOI GIAO DIEN THAT
+===============================================================================
+- Hieu ung chuyen man hinh bi "chay nghen" 2 ly do (sua ca hai):
+  1) Dat QGraphicsOpacityEffect len ca stacked_widget: moi khung hinh phai ve
+     TOAN BO noi dung vao buffer trung gian -> lag. Thay bang MOT lop mau phu
+     (overlay) fade trong eduplay/ui/motion.py: fade_overlay() (chi ve 1 mau
+     phu nen re; neu dang bat hieu ung thi tra None de chuyen man hinh ngay).
+  2) Doan "tranh transition o moi duong co Home" bo qua hieu ung dung o nhung
+     duong dung nhat. Bay moi duong deu co hieu ung.
+- Card Trang chu:
+  * Hover: nang len 4px + bong do mem (chi 3 card, chi khi chu vao nen khong
+    ton CPU lan nap app; dung co so _hovered de khong cong don khi chu quet
+    nhanh tren card).
+  * Sua loi hover "khong chay": closure cu co bien `c` (khong ton tai) nen
+    NameError bi `except: pass` an mat - bay dung tham so mac dinh `c=card`.
+  * Do lai thoi gian ve: 7.2 ms/khung hinh khi nghi, 11.8 ms khi hover 1 card.
+- Animation vao cua card: rut ngan x1.25 qua _motion_ms (giai do "giam chuyen
+  dong") va GO QGraphicsOpacityEffect ngay khi xong. Truoc day effect duoc giu
+  lai vinh vien tren card -> moi lan ve lai ton them MOT luot render.
+- 3 loi giao dien that, thay hien ra khi render man hinh ra anh de kiem:
+  1) 3 card khong rong bang nhau: cards_layout dung AlignCenter lam layout bo
+     qua chia be rong (card "Choi" bi hep con 1/2). Doi thanh AlignVCenter +
+     setStretch(1,1,1).
+  2) Doan mo ta bi CAT CHU o ca dau va cui: QLabel xuong dong khong tu xin du
+     chieu cao (sizeHint tinh theo be rong mac dinh) nen khi be rong that hon
+     thi text vuot khung. _sync_card_heights() goi heightForWidth() va gan
+     minimumHeight cho nhan (chay 0ms + 700ms + khi doi be rong cua so).
+  3) Nut cua 3 card lech nhau: them addStretch giua mo ta va nut -> chung mot
+     duong o day card.
+- Cong cu moi scripts/render_home_screen.py: render Trang chu ra PNG (co trang
+  thai hover) + do thoi gian ve 1 khung hinh, de kiem bang mat thay vi doan.
+- Ket qua: 393/393 PASS, EXIT=0.

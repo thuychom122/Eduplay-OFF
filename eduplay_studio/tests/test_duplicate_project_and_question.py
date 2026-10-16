@@ -4,12 +4,22 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 
 class TestDuplicateProjectAndQuestion(unittest.TestCase):
+    def setUp(self):
+        # save_project() mo thread nen export preview -> mock de tranh race
+        # khi don TemporaryDirectory tren Windows.
+        patcher = patch(
+            "eduplay.core.export_service.ExportService.export_to_html",
+            return_value=True,
+        )
+        patcher.start()
+        self.addCleanup(patcher.stop)
     def test_duplicate_project_creates_new_id_and_copies_questions(self):
         from eduplay.core.project_manager import ProjectManager
 

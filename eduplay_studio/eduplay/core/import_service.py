@@ -8,25 +8,72 @@ from typing import List, Dict, Optional
 from pathlib import Path
 
 from eduplay.core.i18n import I18n
+from eduplay.core.path_resolver import PathResolver
 import unicodedata
 
-try:
-    from docx import Document as DocxDocument
-    DOCX_AVAILABLE = True
-except ImportError:
-    DOCX_AVAILABLE = False
 
-try:
-    import fitz  # PyMuPDF
-    PDF_AVAILABLE = True
-except ImportError:
-    PDF_AVAILABLE = False
+def _module_available(name: str) -> bool:
+    """Kiem tra thu vien co cai dat hay khong MA KHONG import no.
 
-try:
-    from openpyxl import load_workbook
-    XLSX_AVAILABLE = True
-except ImportError:
-    XLSX_AVAILABLE = False
+    dung find_spec thay vi `try: import ...` de khoi dong app khong phai
+    nap openpyxl (~0.9s + numpy) / docx / fitz ngay tu dau - chi nap khi
+    nguoi dung that su bam "Nhap khau".
+    """
+    try:
+        import importlib.util
+
+        return importlib.util.find_spec(name) is not None
+    except Exception:
+        return False
+
+
+# KHONG import o cap module: thu vien nang duoc nap lazy trong tung ham.
+DocxDocument = None      # -> from docx import Document (khi can)
+fitz = None              # -> import fitz (PyMuPDF, khi can)
+load_workbook = None     # -> from openpyxl import load_workbook (khi can)
+
+DOCX_AVAILABLE = _module_available("docx")
+PDF_AVAILABLE = _module_available("fitz")
+XLSX_AVAILABLE = _module_available("openpyxl")
+
+
+def _lazy_docx_document():
+    """Tra ve ham Document cua python-docx, nap lai khi can."""
+    global DocxDocument
+    if DocxDocument is None:
+        from docx import Document as _Document
+
+        DocxDocument = _Document
+    return DocxDocument
+
+
+def _lazy_fitz():
+    """Tra ve module PyMuPDF, nap lai khi can."""
+    global fitz
+    if fitz is None:
+        import fitz as _fitz
+
+        fitz = _fitz
+    return fitz
+
+
+def _lazy_load_workbook():
+    """Tra ve load_workbook cua openpyxl, nap lai khi can."""
+    global load_workbook
+    if load_workbook is None:
+        from openpyxl import load_workbook as _load_workbook
+
+        load_workbook = _load_workbook
+    return load_workbook
+
+# Bracket pairs [...] holding math expressions (e.g. [x+1]) are literal text,
+# not blanks. A bracket is math when it holds an operator, so that answers
+# like [100] or [Đại số] still count as blanks. Double brackets [[...]]
+# always force a blank, even for math (teacher explicit).
+_BRACKET_RE = re.compile(r"\[(.*?)\]")
+_DOUBLE_BRACKET_RE = re.compile(r"\[\[(.*?)\]\]")
+_COMBINED_RE = re.compile(r"\[\[(.*?)\]\]|\[(.*?)\]")
+_MATH_OPS = frozenset("+-*/^=<>")
 
 class ImportService:
     """Service for importing questions from various file formats"""
@@ -63,12 +110,40 @@ class ImportService:
         else:
             return []
     
+    def _resolve_user_file(self, file_path: str) -> str:
+        """Resolve user file path via PathResolver (OneDrive, file://, %20, long path)."""
+        if not file_path:
+            return str(file_path or "")
+        try:
+            # Try full resolver (file)
+            p = PathResolver.resolve_user_file(str(file_path))
+            if p and p.exists():
+                return str(p)
+            p2 = PathResolver.resolve_user_file_any(str(file_path))
+            if p2 and p2.exists():
+                return str(p2)
+            # Fallback to normalized
+            norm = PathResolver.normalize_user_path(str(file_path))
+            if norm and Path(norm).exists():
+                return norm
+        except Exception:
+            pass
+        return str(file_path)
+
     def import_from_txt(self, file_path: str) -> List[Dict]:
         """Import questions from text file"""
         questions = []
-        
+        # OneDrive-aware resolve (handles file://, %20, 8.3, OneDrive sync)
+        file_path = self._resolve_user_file(file_path)
         try:
             # Use utf-8-sig to handle BOM if present
+            # Try resolver hydration first
+            try:
+                rp = PathResolver.resolve_user_file(file_path)
+                if rp:
+                    file_path = str(rp)
+            except Exception:
+                pass
             with open(file_path, 'r', encoding='utf-8-sig') as file:
                 content = file.read()
             
@@ -122,7 +197,7 @@ class ImportService:
         # This ensures we catch questions even if there are no empty lines between them.
         # Also supports headers like "2. Trắc nghiệm (Dạng khác)"
         type_keywords = r"(?:Trắc nghiệm|Đúng|Điền|Ghép|Tự luận|Multiple|True|Fill|Matching|Short)"
-        pattern = r'(?:\n\s*\n)|(?=(?:^|\n)(?:Câu|Question|Pregunta|Frage)\s+\d+[:\.])|(?=(?:^|\n)\d+\.\s+.*' + type_keywords + r')'
+        pattern = r'(?:\n\s*\n)|(?=(?:^|\n)(?:Câu(?:\s+hỏi)?|Question|Pregunta|Frage)\s+\d+\s*[:\.])|(?=(?:^|\n)\d+\.\s+.*' + type_keywords + r')'
         blocks = re.split(pattern, content, flags=re.MULTILINE)
         
         for block in blocks:
@@ -187,7 +262,7 @@ class ImportService:
         if not text:
             return text
         # Remove patterns like "Câu 1:", "Question 1:", "câu 1", "questions 1", etc.
-        text = re.sub(r'(?:Câu|Question|Pregunta|Frage|câu|question|pregunta|frage)\s+\d+[:\.]?\s*', '', text, flags=re.IGNORECASE)
+        text = re.sub(r'(?:Câu(?:\s+hỏi)?|Question|Pregunta|Frage|câu(?:\s+hỏi)?|question|pregunta|frage)\s+\d+\s*[:\.]?\s*', '', text, flags=re.IGNORECASE)
         # Also remove standalone number prefixes like "1.", "2)", "1:" at start of lines
         text = re.sub(r'^\s*\d+[\.\):]\s*', '', text, flags=re.MULTILINE)
         return text
@@ -212,7 +287,7 @@ class ImportService:
 
         # Remove question number prefixes like "Câu 1:", "Question 1:", "câu 1", "questions 1", etc.
         # Pattern matches: Câu/Question/Pregunta/Frage followed by number and optional punctuation
-        question_prefix_pattern = r'^(?:Câu|Question|Pregunta|Frage|câu|question|pregunta|frage)\s+\d+[:\.]?\s*'
+        question_prefix_pattern = r'^(?:Câu(?:\s+hỏi)?|Question|Pregunta|Frage|câu(?:\s+hỏi)?|question|pregunta|frage)\s+\d+\s*[:\.]?\s*'
         if re.match(question_prefix_pattern, first_line, re.IGNORECASE):
             # Remove the prefix from the first line
             lines[0] = re.sub(question_prefix_pattern, '', first_line, flags=re.IGNORECASE).strip()
@@ -223,10 +298,13 @@ class ImportService:
         # After removing question prefix, check if the remaining first line is a type header
         if lines:
             first_line = lines[0].strip()
-            # Regex to match Type Headers
+            # Regex to match Type Headers (support all template headings across vi/en/fr/es/de)
             type_keywords = [
-                r"Trắc nghiệm", r"Đúng\s*[\/-]\s*Sai", r"Điền khuyết", r"Ghép đôi", r"Tự luận",
-                r"Multiple Choice", r"True\s*[\/-]\s*False", r"Fill.*Blank", r"Matching", r"Short Answer"
+                r"Trắc nghiệm", r"Đúng\s*[\/-]\s*Sai", r"Điền khuyết", r"Điền vào chỗ trống", r"Ghép đôi", r"Ghép nối", r"Tự luận", r"Trả lời ngắn",
+                r"Multiple Choice", r"True\s*[\/-]\s*False", r"Fill.*Blank", r"Matching", r"Short Answer",
+                r"Choix multiple", r"Vrai\s*[\/-]\s*Faux", r"Remplir", r"Correspondance", r"Réponse courte",
+                r"Opción múltiple", r"Verdadero\s*[\/-]\s*Falso", r"Llenar", r"Emparejar", r"Respuesta corta",
+                r"Multiple.?Choice", r"Wahr\s*[\/-]\s*Falsch", r"Lückentext", r"Zuordnung", r"Kurzantwort"
             ]
             type_pattern = r'^(?:\d+[\.:]\s*)?.*(?:' + '|'.join(type_keywords) + r').*$'
 
@@ -242,7 +320,7 @@ class ImportService:
         cleaned_lines = []
         for line in lines:
             # Remove patterns like "Câu 1:", "Question 1:", "câu 1", "questions 1", etc.
-            cleaned_line = re.sub(r'(?:Câu|Question|Pregunta|Frage|câu|question|pregunta|frage)\s+\d+[:\.]?\s*', '', line, flags=re.IGNORECASE)
+            cleaned_line = re.sub(r'(?:Câu(?:\s+hỏi)?|Question|Pregunta|Frage|câu(?:\s+hỏi)?|question|pregunta|frage)\s+\d+\s*[:\.]?\s*', '', line, flags=re.IGNORECASE)
             # Also remove standalone number prefixes like "1.", "2)", "1:" at start of lines
             cleaned_line = re.sub(r'^\s*\d+[\.\):]\s*', '', cleaned_line)
             cleaned_lines.append(cleaned_line)
@@ -295,13 +373,17 @@ class ImportService:
             return None
         
         first_line_lower = lines[0].strip().lower()
+        # Use regex to handle optional space before colon and case variations
         if (
-            first_line_lower.startswith('hướng dẫn:') or
-            first_line_lower.startswith('instructions:') or
-            first_line_lower.startswith('instrucciones:') or
-            first_line_lower.startswith('anleitung:') or
+            re.match(r'^\s*hướng dẫn\s*:', first_line_lower) or
+            re.match(r'^\s*instructions\s*:', first_line_lower) or
+            re.match(r'^\s*instrucciones\s*:', first_line_lower) or
+            re.match(r'^\s*anleitung\s*:', first_line_lower) or
             ('hướng dẫn' in first_line_lower) or
-            ('guidelines' in first_line_lower)
+            ('guidelines' in first_line_lower) or
+            first_line_lower.startswith('instructions') or
+            first_line_lower.startswith('instrucciones') or
+            first_line_lower.startswith('anleitung')
         ):
             return None
         
@@ -318,7 +400,7 @@ class ImportService:
             return None
 
         # Check for Short Answer or Fill Blank (line starting with ==)
-        has_q_header = any(re.match(r'^(?:Câu|Question|Pregunta|Frage)\s+\d+[:\.]', l, re.IGNORECASE) for l in lines)
+        has_q_header = any(re.match(r'^(?:Câu(?:\s+hỏi)?|Question|Pregunta|Frage)\s+\d+\s*[:\.]', l, re.IGNORECASE) for l in lines)
         for i, line in enumerate(lines):
             if line.startswith('=='):
                 tail = line[2:].strip()
@@ -338,27 +420,27 @@ class ImportService:
                     correct_answer = tail
                     
                     # Check if this is Fill Blank (has [blank] in question) or Short Answer (direct answer)
-                    # If question has [blank] markers, it's fill_blank
-                    # Otherwise, it's short_answer (direct answer expected)
+                    # If question has [blank] markers, it's fill_blank; math brackets
+                    # (e.g. [x+1]) stay literal and don't count as blanks.
                     if re.search(r'\[.*?\]', question_text):
-                        # Replace [answer] with _____
-                        question_text = re.sub(r'\[.*?\]', '_____', question_text)
-                        return {
-                            "type": "fill_blank",
-                            "question": question_text,
-                            "correct_answer": correct_answer,
-                            "correct_answers": [correct_answer],
-                            "answers": [correct_answer],
-                            "explanation": explanation.strip()
-                        }
-                    else:
-                        # This is a short answer question
-                        return {
-                            "type": "short_answer",
-                            "question": question_text,
-                            "answers": [correct_answer],
-                            "explanation": explanation.strip()
-                        }
+                        display_q, _blanks = self._split_brackets(question_text, [correct_answer])
+                        if [b for b in (_blanks or []) if b]:
+                            return {
+                                "type": "fill_blank",
+                                "question": display_q,
+                                "correct_answer": correct_answer,
+                                "correct_answers": [correct_answer],
+                                "answers": [correct_answer],
+                                "explanation": explanation.strip()
+                            }
+                    # Short answer: no brackets, or only literal math brackets
+                    # (kept intact in the question text)
+                    return {
+                        "type": "short_answer",
+                        "question": question_text,
+                        "answers": [correct_answer],
+                        "explanation": explanation.strip()
+                    }
 
         # Check for Inline Fill Blank (e.g. "Water boils at [100] degrees.")
         # Only if we don't have explicit answer line (which might override)
@@ -368,36 +450,37 @@ class ImportService:
         full_text = "\n".join(cleaned_lines)
 
         # Look for [answer] pattern
-        # Be careful not to match [citation] or [1] if it's not answer.
-        # But user specified this format.
+        # Brackets holding math (e.g. [x+5(78y+y^2)]) stay literal; only real
+        # blanks count. Answers from '==' lines cross-check ambiguous brackets.
+        _known_inline = []
+        for _ln in lines:
+            try:
+                _s = str(_ln or "").strip()
+            except Exception:
+                continue
+            if _s.startswith("=="):
+                _t2 = re.sub(r"^\s*==\s*", "", _s)
+                _t2 = re.sub(r"^([A-Fa-f]|\d{1,2})[\.\)]\s+", "", _t2).strip()
+                if _t2:
+                    _known_inline.append(_t2)
         fill_blank_matches = re.findall(r'\[(.*?)\]', full_text)
         if fill_blank_matches and has_q_header:
-            # Assume the first one or all? User example has one.
-            # If multiple, maybe it's multiple blanks? Current system supports 1 answer usually?
-            # The system seems to support list of answers for fill blank (line 654: "answers": [answer_text]).
-            # But line 372 uses "correct_answer": explicit_answer_char.
-            # Let's support one for now or check data structure.
-            # Line 192 uses "correct_answer". Line 462 uses "answers".
-            # I should use "answers" (list) if possible, or "correct_answer" (string).
-            # Let's use "answers" list.
-            
-            # Replace all [match] with _____
-            question_text = full_text
-            answers = []
-            for match in fill_blank_matches:
-                question_text = question_text.replace(f"[{match}]", "_____")
-                answers.append(match.strip())
+            display_q, _blanks_all = self._split_brackets(full_text, _known_inline)
+            if not _blanks_all:
+                # Only literal math brackets -> not a fill question, keep parsing below
+                pass
+            else:
+                answers = [b for b in _blanks_all if b] or [""]
+                question_text = self._remove_question_numbers(display_q)
 
-            question_text = self._remove_question_numbers(question_text)
-
-            return {
-                "type": "fill_blank",
-                "question": question_text.strip(),
-                "answers": answers, # Use list for consistency
-                "correct_answers": answers, # For UI compatibility
-                "correct_answer": answers[0] if answers else "", # Fallback
-                "explanation": explanation.strip()
-            }
+                return {
+                    "type": "fill_blank",
+                    "question": question_text.strip(),
+                    "answers": answers, # Use list for consistency
+                    "correct_answers": answers, # For UI compatibility
+                    "correct_answer": answers[0] if answers else "", # Fallback
+                    "explanation": explanation.strip()
+                }
 
         # Check for explicit "Answer:" line (Legacy support within block)
         explicit_answer_char = None
@@ -445,7 +528,8 @@ class ImportService:
         smart_answer_line_idx = -1
         
         for i, line in enumerate(lines):
-            if line.strip().endswith('=='):
+            s = line.strip()
+            if s.endswith('==') or s.startswith('=='):
                 has_smart_answer = True
                 smart_answer_line_idx = i
                 break
@@ -517,13 +601,15 @@ class ImportService:
             # We found '=='. This line IS an option.
             # Scan backwards to find the start of the option block.
             
-            # Identify prefix of the answer line
+            # Identify prefix of the answer line (strip leading ==)
             ans_line = lines[smart_answer_line_idx].strip()
+            # strip leading marker for prefix detection
+            ans_line_noprefix = re.sub(r'^\s*==\s*', '', ans_line)
             ans_prefix = None
             current_family = None
             
             for p in option_prefixes:
-                if ans_line.startswith(p):
+                if ans_line_noprefix.startswith(p):
                     ans_prefix = p
                     break
             
@@ -543,17 +629,19 @@ class ImportService:
                 
                 is_option = False
                 
-                if re.match(r'^(?:Câu|Question|Pregunta|Frage)\s+\d+[:\.]', line, re.IGNORECASE):
+                if re.match(r'^(?:Câu(?:\s+hỏi)?|Question|Pregunta|Frage)\s+\d+\s*[:\.]', line, re.IGNORECASE):
                     break
                 
+                # Strip leading == for prefix detection
+                line_noprefix = re.sub(r'^\s*==\s*', '', line)
                 if ans_prefix:
                      # Check if line starts with a prefix from the SAME family
                      if current_family:
-                         if any(line.startswith(p) for p in current_family):
+                         if any(line_noprefix.startswith(p) for p in current_family):
                              is_option = True
                      else:
                          # Fallback if prefix not in known families (shouldn't happen with standard list)
-                         if any(line.startswith(p) for p in option_prefixes):
+                         if any(line_noprefix.startswith(p) for p in option_prefixes):
                              is_option = True
                 else:
                     first_option_idx = i
@@ -578,7 +666,7 @@ class ImportService:
             letter_prefixes = [p for p in option_prefixes if p[0].lower() in 'abcdef']
             for i, line in enumerate(lines):
                 if i == 0: continue
-                clean_line = line.strip()
+                clean_line = re.sub(r'^\s*==\s*', '', line.strip())
                 if any(clean_line.startswith(p) for p in letter_prefixes):
                     split_idx = i
                     break
@@ -588,7 +676,7 @@ class ImportService:
                 other_prefixes = [p for p in option_prefixes if p[0].lower() not in 'abcdef']
                 for i, line in enumerate(lines):
                     if i == 0: continue
-                    clean_line = line.strip()
+                    clean_line = re.sub(r'^\s*==\s*', '', line.strip())
                     if any(clean_line.startswith(p) for p in other_prefixes):
                         split_idx = i
                         break
@@ -957,7 +1045,7 @@ class ImportService:
         # Flexible pattern:
         # Capture from "Question X" to "Answer: Y"
         # We capture the body (text + options) and the answer
-        pattern = r'(?:Câu|Question|Pregunta|Frage)\s+(\d+)[:\.]\s*(.+?)\s*(?:Đáp\s+án|Answer|Réponse|Respuesta|Antwort|Đáp\s+án\s+đúng|Correct\s+Answer):\s*([A-D])'
+        pattern = r'(?:Câu(?:\s+hỏi)?|Question|Pregunta|Frage)\s+(\d+)\s*[:\.]\s*(.+?)\s*(?:Đáp\s+án|Answer|Réponse|Respuesta|Antwort|Đáp\s+án\s+đúng|Correct\s+Answer):\s*([A-D])'
         
         # Split content into blocks roughly to avoid greedy matching issues across questions?
         # Actually, findall with non-greedy (.+?) usually works well for sequential blocks
@@ -1015,7 +1103,7 @@ class ImportService:
         
         # Pattern for true/false questions (supports VI/EN/FR/ES/DE)
         # Use negative lookahead to prevent matching across questions
-        pattern = r'(?:Câu|Question|Pregunta|Frage)\s+(\d+)[:\.]\s*((?:(?!\n\s*(?:Câu|Question|Pregunta|Frage)\s+\d+).)+?)\n\s*(?:Đáp\s+án|Answer|Réponse|Respuesta|Antwort):\s*(Đúng|Sai|True|False|Vrai|Faux|Verdadero|Falso|Wahr|Falsch)'
+        pattern = r'(?:Câu(?:\s+hỏi)?|Question|Pregunta|Frage)\s+(\d+)\s*[:\.]\s*((?:(?!\n\s*(?:Câu(?:\s+hỏi)?|Question|Pregunta|Frage)\s+\d+).)+?)\n\s*(?:Đáp\s+án|Answer|Réponse|Respuesta|Antwort):\s*(Đúng|Sai|True|False|Vrai|Faux|Verdadero|Falso|Wahr|Falsch)'
         
         matches = re.findall(pattern, content, re.MULTILINE | re.DOTALL)
         
@@ -1039,7 +1127,7 @@ class ImportService:
         
         # Pattern for fill blank questions (supports VI/EN/FR/ES/DE)
         # Use lookahead to stop at next question or end of string
-        pattern = r'(?:Câu|Question|Pregunta|Frage)\s+(\d+)[:\.]\s*((?:(?!\n\s*(?:Câu|Question|Pregunta|Frage)\s+\d+).)+?)\n\s*(?:Đáp\s+án|Answer|Réponse|Respuesta|Antwort):\s*(.+?)(?=\n\s*(?:Câu|Question|Pregunta|Frage)|$)'
+        pattern = r'(?:Câu(?:\s+hỏi)?|Question|Pregunta|Frage)\s+(\d+)\s*[:\.]\s*((?:(?!\n\s*(?:Câu(?:\s+hỏi)?|Question|Pregunta|Frage)\s+\d+).)+?)\n\s*(?:Đáp\s+án|Answer|Réponse|Respuesta|Antwort):\s*(.+?)(?=\n\s*(?:Câu(?:\s+hỏi)?|Question|Pregunta|Frage)|$)'
         
         matches = re.findall(pattern, content, re.MULTILINE | re.DOTALL)
         
@@ -1073,7 +1161,7 @@ class ImportService:
         
         # Look for matching blocks
         # Pattern: Question X: ... \n Column A - Column B \n ...
-        pattern = r'(?:Câu|Question|Pregunta|Frage)\s+(\d+)[:\.]\s*((?:(?!\n\s*(?:Câu|Question|Pregunta|Frage)\s+\d+).)+?)\n\s*(?:Cột A|Column A|Colonne A|Columna A|Spalte A)\s*-\s*(?:Cột B|Column B|Colonne B|Columna B|Spalte B)\s*\n(.+?)(?=\n\s*(?:Câu|Question|Pregunta|Frage)|$)'
+        pattern = r'(?:Câu(?:\s+hỏi)?|Question|Pregunta|Frage)\s+(\d+)\s*[:\.]\s*((?:(?!\n\s*(?:Câu(?:\s+hỏi)?|Question|Pregunta|Frage)\s+\d+).)+?)\n\s*(?:Cột A|Column A|Colonne A|Columna A|Spalte A)\s*-\s*(?:Cột B|Column B|Colonne B|Columna B|Spalte B)\s*\n(.+?)(?=\n\s*(?:Câu(?:\s+hỏi)?|Question|Pregunta|Frage)|$)'
         
         matches = re.findall(pattern, content, re.MULTILINE | re.DOTALL)
         
@@ -1119,9 +1207,27 @@ class ImportService:
     
     def import_from_file(self, file_path: str) -> List[Dict]:
         """Import questions from file based on extension"""
-        if not os.path.exists(file_path):
+        # OneDrive-aware resolve before existence check
+        resolved = self._resolve_user_file(file_path)
+        # Also try full resolver for cloud hydration
+        try:
+            pr = PathResolver.resolve_user_file(resolved)
+            if pr and pr.exists():
+                resolved = str(pr)
+        except Exception:
+            pass
+        if not os.path.exists(resolved):
+            # Try resolver fallback
+            try:
+                pr2 = PathResolver.resolve_user_file_any(file_path)
+                if pr2 and pr2.exists():
+                    resolved = str(pr2)
+            except Exception:
+                pass
+        if not os.path.exists(resolved):
             raise FileNotFoundError(I18n.t("import.error.file_not_found", path=file_path))
-        
+        # Use resolved for next steps
+        file_path = resolved
         file_ext = Path(file_path).suffix.lower()
         
         if file_ext == '.docx':
@@ -1132,6 +1238,10 @@ class ImportService:
             return self.import_from_pdf(file_path)
         elif file_ext == '.xlsx':
             return self.import_from_xlsx(file_path)
+        elif file_ext == '.txt':
+            # Bo loc file da hua .txt nen phai xu ly that, khong bao loi
+            # "dinh dang khong ho tro" khi nguoi dung chon dung file.
+            return self.import_from_txt(file_path)
         else:
             raise ValueError(I18n.t("import.error.unsupported_format", ext=file_ext))
 
@@ -1166,11 +1276,18 @@ class ImportService:
         """Import questions from DOCX file"""
         if not DOCX_AVAILABLE:
             raise ImportError(I18n.t("import.error.docx_missing"))
-        
+        file_path = self._resolve_user_file(file_path)
         questions = []
         
         try:
-            doc = DocxDocument(file_path)
+            # Handle OneDrive Files On-Demand hydration
+            try:
+                rp = PathResolver.resolve_user_file(file_path)
+                if rp:
+                    file_path = str(rp)
+            except Exception:
+                pass
+            doc = _lazy_docx_document()(file_path)
             full_text = []
             
             # Extract text from paragraphs
@@ -1197,11 +1314,17 @@ class ImportService:
         """Import questions from PDF file"""
         if not PDF_AVAILABLE:
             raise ImportError(I18n.t("import.error.pdf_missing"))
-        
+        file_path = self._resolve_user_file(file_path)
         questions = []
         
         try:
-            doc = fitz.open(file_path)
+            try:
+                rp = PathResolver.resolve_user_file(file_path)
+                if rp:
+                    file_path = str(rp)
+            except Exception:
+                pass
+            doc = _lazy_fitz().open(file_path)
             full_text = []
             
             # Extract text from all pages
@@ -1228,52 +1351,455 @@ class ImportService:
         
         return questions
     
+    @staticmethod
+    def _xlsx_cell_str(value) -> str:
+        """Convert an Excel cell value to clean text (numbers stay clean: 100, not 100.0)."""
+        if value is None:
+            return ""
+        if isinstance(value, bool):
+            return "True" if value else "False"
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, float):
+            return str(int(value)) if value.is_integer() else str(value)
+        return str(value).strip()
+
+    @staticmethod
+    def _xlsx_norm(text: str) -> str:
+        # Lowercase + bỏ dấu (kể cả đ→d vì NFD không tách được đ) để so khớp header/kiểu
+        try:
+            import unicodedata
+            t = unicodedata.normalize("NFD", str(text or "").lower().replace("đ", "d"))
+            t = "".join(c for c in t if unicodedata.category(c) != "Mn")
+        except Exception:
+            t = str(text or "").lower().replace("đ", "d")
+        t = re.sub(r"[^a-z0-9\s]", " ", t)
+        return re.sub(r"\s+", " ", t).strip()
+
+    @staticmethod
+    def _bracket_is_math(content: str) -> bool:
+        """True when a [...] content is a math expression, not a blank.
+
+        Rules: empty [] is always a blank; a leading +/- sign is ignored
+        (so [-5] stays an answer); otherwise any operator (+-*/^=<>) means
+        math, e.g. [x+5(78y+y^2)]. Plain words/numbers ([100], [Đại số])
+        are answers.
+        """
+        try:
+            s = (content or "").strip()
+        except Exception:
+            return False
+        if not s:
+            return False
+        if s[0] in "+-" and len(s) > 1:
+            s = s[1:].lstrip()
+            if not s:
+                return False
+        return any(ch in _MATH_OPS for ch in s)
+
+    @staticmethod
+    def _space_run(text: str, idx: int, step: int) -> int:
+        """Count consecutive spaces/tabs from idx (step -1 backward, +1 forward)."""
+        try:
+            n, j = 0, idx
+            while 0 <= j < len(text) and text[j] in " \t":
+                n += 1
+                j += step
+            return n
+        except Exception:
+            return 0
+
+    def _split_brackets(self, text, known_answers=None):
+        """Split [...] occurrences into real blanks vs literal math.
+
+        Returns (display_text, blanks).
+        Precedence:
+        1. Double brackets [[...]] ALWAYS force a blank, even for math
+           ("Biểu thức [[x+5(78y+y^2)]]+5 ..." -> blank "x+5...").
+        2. Single [...] with known answers: a bracket matching a known
+           answer is a blank; empty [] is always blank; non-math is blank;
+           math brackets that match nothing stay literal.
+        3. Single [...] with no known answers: an emphasized bracket
+           (detached + 2+ spaces on either side) wins even if math; else
+           every detached non-math bracket is a blank; if none is detached,
+           all non-math contents are blanks (math stays literal).
+           So "[x+1]+5" stays literal, "[100]" becomes a blank.
+        known_answers cross-checks (e.g. Excel answer columns, '==' lines).
+        """
+        try:
+            combined = list(_COMBINED_RE.finditer(text or ""))
+        except Exception:
+            return text, []
+        if not combined:
+            return text, []
+        try:
+            known = {self._xlsx_norm(a) for a in (known_answers or [])
+                     if str(a or "").strip()}
+        except Exception:
+            known = set()
+
+        def _key(content):
+            try:
+                return self._xlsx_norm(content)
+            except Exception:
+                return ""
+
+        # Separate singles (doubles are always forced blanks).
+        singles = []  # list of dicts with cidx, match, content, key, detached, emphasized, is_math, empty
+        for cidx, m in enumerate(combined):
+            try:
+                dbl = m.group(1)
+            except Exception:
+                dbl = None
+            if dbl is not None:
+                continue
+            try:
+                content = m.group(2)
+                if content is None:
+                    content = ""
+            except Exception:
+                content = ""
+            lead = self._space_run(text, m.start() - 1, -1)
+            trail = self._space_run(text, m.end(), 1)
+            try:
+                detached = (m.start() == 0 or (text[m.start() - 1] in " \t")) \
+                    and (m.end() == len(text) or (text[m.end()] in " \t"))
+            except Exception:
+                detached = False
+            emphasized = lead >= 2 or trail >= 2
+            try:
+                is_math = self._bracket_is_math(content)
+            except Exception:
+                is_math = False
+            try:
+                empty = not str(content or "").strip()
+            except Exception:
+                empty = True
+            singles.append({
+                "cidx": cidx,
+                "match": m,
+                "content": content,
+                "key": _key(content),
+                "detached": detached,
+                "emphasized": emphasized,
+                "is_math": is_math,
+                "empty": empty,
+            })
+
+        if known:
+            # Rule 2: cross-check mode (singles only; doubles always blank).
+            blanks_single_cidx = {
+                inf["cidx"] for inf in singles
+                if inf["empty"]
+                or (inf["key"] and inf["key"] in known)
+                or (not inf["is_math"])
+            }
+        else:
+            # Rule 3: spacing decides; math stays literal unless emphasized.
+            emph = {inf["cidx"] for inf in singles
+                    if inf["detached"] and inf["emphasized"]}
+            if emph:
+                blanks_single_cidx = set(emph)
+            else:
+                det = {inf["cidx"] for inf in singles
+                       if inf["detached"] and not inf["is_math"]}
+                if det:
+                    blanks_single_cidx = det
+                else:
+                    blanks_single_cidx = {inf["cidx"] for inf in singles
+                                          if not inf["is_math"]}
+
+        blanks = []
+        parts, last = [], 0
+        for cidx, m in enumerate(combined):
+            try:
+                dbl = m.group(1)
+            except Exception:
+                dbl = None
+            if dbl is not None:
+                parts.append(text[last:m.start()])
+                parts.append("_____")
+                last = m.end()
+                blanks.append((dbl or "").strip())
+            elif cidx in blanks_single_cidx:
+                parts.append(text[last:m.start()])
+                parts.append("_____")
+                last = m.end()
+                try:
+                    blanks.append((m.group(2) or "").strip())
+                except Exception:
+                    blanks.append("")
+            # else: literal math bracket stays in text via trailing slice
+        parts.append(text[last:])
+        return "".join(parts), blanks
+
+    @staticmethod
+    def _xlsx_formula_to_text(value) -> str:
+        """Recover text from a formula-stored cell ('==' bị công cụ ghi thành công thức)."""
+        s = str(value or "").strip()
+        if len(s) > 1 and s[0] == "'" and s[1] == "=":
+            s = s[1:]
+        if s.startswith("=") and not s.startswith("=="):
+            s = "=" + s
+        return s.strip()
+
     def import_from_xlsx(self, file_path: str) -> List[Dict]:
-        """Import questions from XLSX file"""
+        """Import questions from XLSX file.
+
+        New template layout (STT | Câu hỏi | Đáp án 1..N | Giải thích,
+        correct marked with '==' prefix) is detected by header; the legacy
+        layout (Question | Option A-D | Correct | Explanation | Type) still works.
+        """
         if not XLSX_AVAILABLE:
             raise ImportError(I18n.t("import.error.xlsx_missing"))
-        
+        file_path = self._resolve_user_file(file_path)
         questions = []
-        
+
         try:
-            wb = load_workbook(file_path)
+            try:
+                rp = PathResolver.resolve_user_file(file_path)
+                if rp:
+                    file_path = str(rp)
+            except Exception:
+                pass
+            wb = _lazy_load_workbook()(file_path, data_only=True)
             ws = wb.active
-            
-            # Expected column structure:
-            # A: Question, B: Option1, C: Option2, D: Option3, E: Option4, 
-            # F: Correct Answer, G: Explanation, H: Type
-            
-            for row in ws.iter_rows(min_row=2, values_only=True):  # Skip header
-                if not row or not row[0]:  # Skip empty rows
-                    continue
-                
-                question_data = {
-                    "question": str(row[0]) if row[0] else "",
-                    "options": [],
-                    "correct_answer": str(row[5]) if len(row) > 5 and row[5] else "",
-                    "explanation": str(row[6]) if len(row) > 6 and row[6] else "",
-                    "type": str(row[7]).lower().replace(" ", "_") if len(row) > 7 and row[7] else "multiple_choice"
-                }
-                
-                # Build options
-                if len(row) > 4:
-                    options = []
-                    for i, option in enumerate(row[1:5], 1):
-                        if option:
-                            options.append(f"{chr(64 + i)}. {option}")
-                    question_data["options"] = options
-                
-                # Validate and fix question
-                validated_question = self._validate_imported_question(question_data)
-                if validated_question:
-                    questions.append(validated_question)
-            
-            wb.close()
-            
+            # Workbook thứ 2 (giữ công thức dạng text) để cứu các ô '==' bị lưu thành công thức
+            try:
+                _wb_f = _lazy_load_workbook()(file_path, data_only=False)
+                _ws_f = _wb_f.active
+            except Exception:
+                _wb_f = None
+                _ws_f = None
+
+            def _cell_text(r_idx: int, c_idx: int, cell) -> str:
+                v = cell.value
+                if v is None and _ws_f is not None:
+                    try:
+                        v = self._xlsx_formula_to_text(_ws_f.cell(row=r_idx, column=c_idx).value)
+                    except Exception:
+                        v = None
+                s = self._xlsx_cell_str(v)
+                # Bỏ dấu nháy openpyxl/Excel tự thêm trước '='
+                if len(s) > 1 and s[0] == "'" and s[1] == "=":
+                    s = s[1:]
+                return s.strip()
+
+            rows = []
+            for r_idx, row_cells in enumerate(ws.iter_rows(), 1):
+                rows.append([_cell_text(r_idx, c_idx, cell)
+                             for c_idx, cell in enumerate(row_cells, 1)])
+            # Drop fully empty rows but keep original indices for header search
+            non_empty = [(i, r) for i, r in enumerate(rows)
+                         if any(str(c or "").strip() for c in (r or []))]
+            if not non_empty:
+                wb.close()
+                return []
+
+            def _is_header(row) -> bool:
+                cells = [self._xlsx_norm(c) for c in (row or [])]
+                return any(c in ("cau hoi", "question") for c in cells)
+
+            def _is_legacy_header(row) -> bool:
+                cells = [self._xlsx_norm(c) for c in (row or [])]
+                joined = " ".join(cells)
+                return ("tuy chon" in joined or "option" in joined) and "dap an" not in joined.replace("dap an ", "")
+
+            header_idx = -1
+            legacy = False
+            for i, r in non_empty:
+                if _is_header(r):
+                    header_idx = i
+                    legacy = _is_legacy_header(r)
+                    break
+
+            if header_idx >= 0 and not legacy:
+                # ---- New template layout ----
+                header = non_empty[[k for k, (i, _) in enumerate(non_empty) if i == header_idx][0]][1]
+                norm_headers = [self._xlsx_norm(c) for c in header]
+                try:
+                    col_q = next(k for k, c in enumerate(norm_headers) if c in ("cau hoi", "question"))
+                except StopIteration:
+                    col_q = 1
+                try:
+                    col_e = next(k for k, c in enumerate(norm_headers)
+                                 if c in ("giai thich", "explanation") and k > col_q)
+                except StopIteration:
+                    col_e = len(header) - 1
+                ans_cols = [k for k in range(col_q + 1, col_e)]
+                if not ans_cols:
+                    ans_cols = list(range(col_q + 1, len(header)))
+                data_rows = [r for i, r in non_empty if i > header_idx]
+                for r in data_rows:
+                    cells = [self._xlsx_cell_str(c) for c in (r or [])]
+                    while len(cells) <= max(col_q, col_e, max(ans_cols)):
+                        cells.append("")
+                    q_text = cells[col_q].strip()
+                    if not q_text:
+                        continue
+                    if self._xlsx_norm(q_text) in ("cau hoi", "question", "stt",
+                                                   "huong dan", "bang mau"):
+                        continue
+                    answers = [cells[k].strip() for k in ans_cols if cells[k].strip()]
+                    if not answers:
+                        continue
+                    expl = cells[col_e].strip()
+                    parsed = self._parse_xlsx_template_row(q_text, answers, expl)
+                    if parsed is None:
+                        continue
+                    validated = self._validate_imported_question(parsed)
+                    if validated:
+                        questions.append(validated)
+            else:
+                # ---- Legacy layout: A=Question, B-E=Options, F=Correct, G=Explanation, H=Type ----
+                start = header_idx + 1 if header_idx >= 0 else 1
+                for r in rows[start:]:
+                    if not r or not str(r[0] or "").strip():
+                        continue
+                    question_data = {
+                        "question": str(r[0]) if r[0] else "",
+                        "options": [],
+                        "correct_answer": str(r[5]) if len(r) > 5 and r[5] else "",
+                        "explanation": str(r[6]) if len(r) > 6 and r[6] else "",
+                        "type": str(r[7]).lower().replace(" ", "_") if len(r) > 7 and r[7] else "multiple_choice"
+                    }
+                    if len(r) > 4:
+                        options = []
+                        for i, option in enumerate(r[1:5], 1):
+                            if option:
+                                options.append(f"{chr(64 + i)}. {option}")
+                        question_data["options"] = options
+                    validated_question = self._validate_imported_question(question_data)
+                    if validated_question:
+                        questions.append(validated_question)
+
+            try:
+                wb.close()
+            except Exception:
+                pass
+            try:
+                if _wb_f is not None:
+                    _wb_f.close()
+            except Exception:
+                pass
+
         except Exception as e:
             raise RuntimeError(I18n.t("import.error.xlsx_read_failed", error=str(e)))
-        
+
         return questions
+
+    def _parse_xlsx_template_row(self, q_text: str, answers: List[str], expl: str) -> Optional[Dict]:
+        """Parse one new-template Excel row (STT | Câu hỏi | Đáp án.. | Giải thích).
+
+        Conventions: '==' prefix marks the correct choice, 'left = right'
+        cells are matching pairs, a question containing [] or ___ is fill blank.
+        Leading 'Câu hỏi N:' prefixes are stripped.
+        """
+        q_text = re.sub(
+            r"^(câu(\s+hỏi)?|question|pregunta|frage)\s+\d+\s*[:\.]?\s*",
+            "", q_text.strip(), flags=re.IGNORECASE)
+        # Strip '==' correct markers (keep position) and letter prefixes (A. / B) ...)
+        cleaned = []
+        correct_idx = -1
+        for ans in answers:
+            text = ans.strip()
+            if text.startswith("=="):
+                text = text[2:].strip()
+                if correct_idx == -1:
+                    correct_idx = len(cleaned)
+            text = re.sub(r"^([A-Fa-f]|\d{1,2})[\.\)]\s+", "", text).strip()
+            if text:
+                cleaned.append(text)
+        _has_blanks = ("[" in q_text and "]" in q_text) or ("___" in q_text)
+        if not cleaned and not _has_blanks:
+            return None
+
+        # Fill in the blank: real blanks become ___ but math brackets
+        # (e.g. [x+5(78y+y^2)]) stay literal in the question.
+        display_q, blanks = self._split_brackets(q_text, cleaned)
+        has_us = "___" in q_text
+        if blanks or has_us:
+            fb_answers = list(cleaned) if cleaned else [b for b in blanks if b]
+            if not fb_answers:
+                return None
+            return {
+                "type": "fill_blank",
+                "question": display_q,
+                "correct_answers": fb_answers,
+                "answers": fb_answers,
+                "correct_answer": fb_answers[0],
+                "explanation": expl,
+            }
+
+        # Matching: every answer cell is a 'left = right' pair
+        def _as_pair(text: str):
+            if any(op in text for op in (">=", "<=", "=>", "==")):
+                return None
+            if "=" not in text:
+                return None
+            left, right = text.split("=", 1)
+            left, right = left.strip(), right.strip()
+            return {"left": left, "right": right} if left and right else None
+
+        pairs = [_as_pair(t) for t in cleaned]
+        if len(cleaned) >= 2 and all(pairs):
+            return {
+                "type": "matching",
+                "question": q_text,
+                "pairs": pairs,
+                "explanation": expl,
+            }
+
+        # True/False: the two answers are a Đúng/Sai pair
+        tf_true = {"đúng", "dung", "true", "vrai", "verdadero", "wahr"}
+        tf_false = {"sai", "false", "faux", "falso", "falsch"}
+        lowered = [self._xlsx_norm(t) for t in cleaned]
+        if len(cleaned) == 2 and (
+            (lowered[0] in tf_true and lowered[1] in tf_false)
+            or (lowered[0] in tf_false and lowered[1] in tf_true)
+        ):
+            if correct_idx >= 0:
+                correct_bool = cleaned[correct_idx].strip().lower() not in (
+                    "sai", "false", "faux", "falso", "falsch")
+            else:
+                correct_bool = lowered[0] in tf_true
+            return {
+                "type": "true_false",
+                "question": q_text,
+                "correct_answer": correct_bool,
+                "explanation": expl,
+            }
+
+        # Short answer: single answer, or several case variants of one answer
+        # without any '==' marker (e.g. "William Shakespeare" / "william shakespeare")
+        if len(cleaned) == 1:
+            return {
+                "type": "short_answer",
+                "question": q_text,
+                "answers": cleaned,
+                "explanation": expl,
+            }
+        if correct_idx == -1:
+            try:
+                _normed = [self._xlsx_norm(t) for t in cleaned]
+            except Exception:
+                _normed = list(cleaned)
+            if len(set(_normed)) == 1:
+                return {
+                    "type": "short_answer",
+                    "question": q_text,
+                    "answers": cleaned,
+                    "explanation": expl,
+                }
+
+        # Default: multiple choice
+        return {
+            "type": "multiple_choice",
+            "question": q_text,
+            "options": cleaned,
+            "correct_answer": correct_idx if correct_idx >= 0 else 0,
+            "explanation": expl,
+        }
     
     def _parse_questions_from_text(self, text: str) -> List[Dict]:
         """Parse questions from plain text"""
@@ -1627,7 +2153,7 @@ class ImportService:
     
     def _create_sample_docx(self, file_path: str, lang: str, template_type: str = "general"):
         """Create sample DOCX template"""
-        doc = DocxDocument()
+        doc = _lazy_docx_document()()
         l = lang or "vi"
         
         doc.add_heading(I18n.t("template.docx.title", l), 0)
@@ -1646,8 +2172,49 @@ class ImportService:
         doc.add_paragraph(I18n.t("template.docx.instructions_2", l))
         doc.add_paragraph(I18n.t("template.docx.instructions_3", l))
         doc.add_paragraph(I18n.t("template.docx.instructions_4", l))
-        doc.add_paragraph(I18n.t("template.docx.instructions_5", l))
+        # ALTP/millionaire: shortened type list (MC + True/False only).
+        if str(template_type or "").lower() == "millionaire":
+            _i5 = I18n.t("template.docx.instructions_5_millionaire", l)
+            doc.add_paragraph(_i5 if _i5 and _i5 != "template.docx.instructions_5_millionaire"
+                             else I18n.t("template.docx.instructions_5", l))
+        else:
+            doc.add_paragraph(I18n.t("template.docx.instructions_5", l))
         doc.add_paragraph("")
+
+        # Separate attention block about [...] vs [[...]] (not merged into instructions)
+        # ALTP/millionaire: no attention needed (MC only).
+        if str(template_type or "").lower() != "millionaire":
+            try:
+                _att_title = I18n.t("template.docx.attention_title", l)
+                _att_1 = I18n.t("template.docx.attention_1", l)
+                _att_2 = I18n.t("template.docx.attention_2", l)
+                _att_3 = I18n.t("template.docx.attention_3", l)
+            except Exception:
+                _att_title, _att_1, _att_2, _att_3 = "", "", "", ""
+            if _att_title and _att_title != "template.docx.attention_title":
+                try:
+                    from docx.shared import RGBColor
+                    _h = doc.add_heading(_att_title, level=2)
+                    try:
+                        for _run in _h.runs:
+                            _run.font.color.rgb = RGBColor(0xC0, 0x00, 0x00)
+                    except Exception:
+                        pass
+                except Exception:
+                    doc.add_heading(_att_title, level=2)
+                for _key in (_att_1, _att_2, _att_3):
+                    try:
+                        if _key and not str(_key).startswith("template.docx.attention_"):
+                            _p = doc.add_paragraph(str(_key))
+                            try:
+                                from docx.shared import Pt
+                                for _run in _p.runs:
+                                    _run.font.size = Pt(10.5)
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
+                doc.add_paragraph("")
         
         doc.add_heading(I18n.t("template.docx.samples_heading", l), level=1)
         doc.add_paragraph("")
@@ -1698,78 +2265,189 @@ class ImportService:
         doc.save(file_path)
     
     def _create_sample_xlsx(self, file_path: str, lang: str = "vi", template_type: str = "general"):
-        """Create sample XLSX template"""
+        """Create sample XLSX template (guide block + yellow sample table, Times New Roman)."""
         from openpyxl import Workbook
-        
+        from openpyxl.styles import Alignment, Border, Font, PatternFill
+        from openpyxl.utils import get_column_letter
+
         l = lang or "vi"
         wb = Workbook()
         ws = wb.active
-        ws.title = I18n.t("import.xlsx.sheet_title", l)
-        
-        # Headers
-        headers = [
-            I18n.t("import.xlsx.header.question", l), 
-            I18n.t("import.xlsx.header.option_a", l), 
-            I18n.t("import.xlsx.header.option_b", l), 
-            I18n.t("import.xlsx.header.option_c", l), 
-            I18n.t("import.xlsx.header.option_d", l), 
-            I18n.t("import.xlsx.header.correct_answer", l), 
-            I18n.t("import.xlsx.header.explanation", l), 
-            I18n.t("import.xlsx.header.type", l)
-        ]
-        
-        for col, header in enumerate(headers, 1):
-            ws.cell(row=1, column=col, value=header)
-        
-        # Sample data
-        sample_data = [
-            [
-                I18n.t("import.sample.q1", l), 
-                I18n.t("import.sample.q1_opt1", l), 
-                I18n.t("import.sample.q1_opt2", l), 
-                I18n.t("import.sample.q1_opt3", l), 
-                I18n.t("import.sample.q1_opt4", l), 
-                "A", 
-                I18n.t("import.sample.q1_expl", l), 
-                "multiple_choice"
-            ],
-            [
-                I18n.t("import.sample.q2", l), 
-                "100", "50", "75", "25", 
-                "A", 
-                I18n.t("import.sample.q2_expl", l), 
-                "multiple_choice"
-            ]
-        ]
+        ws.title = I18n.t("template.xlsx.sheet_title", l)
+        try:
+            ws.sheet_view.showGridLines = True
+        except Exception:
+            pass
 
-        if template_type != "millionaire":
-            sample_data.append([
-                I18n.t("import.sample.q3", l), 
-                I18n.t("import.default.true", l), 
-                I18n.t("import.default.false", l), 
-                "", "", 
-                "A", 
-                I18n.t("import.sample.q3_expl", l), 
-                "true_false"
-            ])
-        
-        for row_idx, row_data in enumerate(sample_data, 2):
-            for col_idx, value in enumerate(row_data, 1):
-                ws.cell(row=row_idx, column=col_idx, value=value)
-        
-        # Auto-adjust column widths
-        for column in ws.columns:
-            max_length = 0
-            column_letter = column[0].column_letter
-            for cell in column:
+        _TNR = "Times New Roman"
+        _BLUE = "0000FF"
+        _YELLOW = "FFFF00"
+        _thin_side = __import__("openpyxl.styles", fromlist=["Side"]).Side(style="thin", color="000000")
+        _thin_border = Border(left=_thin_side, right=_thin_side, top=_thin_side, bottom=_thin_side)
+
+        def _t(key: str, **kwargs) -> str:
+            try:
+                val = I18n.t(key, l, **kwargs)
+            except Exception:
+                val = ""
+            if not val or val == key:
+                return ""
+            return val
+
+        # Row 1: guide title (blue, bold), merged A1:B1 like the reference file
+        ws.merge_cells("A1:B1")
+        ws["A1"] = _t("template.xlsx.guide_title") or "HƯỚNG DẪN:"
+        ws["A1"].font = Font(name=_TNR, size=14, bold=True, color=_BLUE)
+
+        # Row 2: spacer (merged A2:B2)
+        ws.merge_cells("A2:B2")
+
+        # Rows 3-4 merged: guide text (wrapped, top aligned)
+        # ALTP/millionaire: only 2 items; general: 4 items. Note block is separate.
+        _is_altp = str(template_type or "").lower() == "millionaire"
+        _guide_keys = ("template.xlsx.guide_1", "template.xlsx.guide_2") if _is_altp else (
+            "template.xlsx.guide_1",
+            "template.xlsx.guide_2",
+            "template.xlsx.guide_3",
+            "template.xlsx.guide_4",
+        )
+        guide = "\n".join([x for x in (_t(_k) for _k in _guide_keys) if x])
+        ws.merge_cells("A3:G4")
+        _g = ws["A3"]
+        _g.value = guide
+        _g.font = Font(name=_TNR, size=12)
+        _g.alignment = Alignment(wrap_text=True, vertical="top")
+        try:
+            ws.row_dimensions[3].height = 30 if _is_altp else 60
+            ws.row_dimensions[4].height = 15
+        except Exception:
+            pass
+
+        # Row 5: separate attention title (red, bold) - NOT merged into guide
+        # ALTP/millionaire: no attention needed (MC only).
+        _RED = "C00000"
+        _show_note = not _is_altp
+        _note_title = _t("template.xlsx.note_title") if _show_note else ""
+        ws.merge_cells("A5:G5")
+        _nt = ws["A5"]
+        _nt.value = _note_title
+        _nt.font = Font(name=_TNR, size=12, bold=True, color=_RED)
+        _nt.alignment = Alignment(vertical="center", wrap_text=True)
+        try:
+            ws.row_dimensions[5].height = (18 if _note_title else 5)
+        except Exception:
+            pass
+
+        # Rows 6-7 merged: attention body (nice, easy to read)
+        _note_body = ("\n".join([x for x in (
+            _t("template.xlsx.note_1"),
+            _t("template.xlsx.note_2"),
+            _t("template.xlsx.note_3"),
+        ) if x]) if _show_note else "")
+        ws.merge_cells("A6:G7")
+        _nb = ws["A6"]
+        _nb.value = _note_body
+        _nb.font = Font(name=_TNR, size=11, color="404040")
+        _nb.alignment = Alignment(wrap_text=True, vertical="top")
+        try:
+            ws.row_dimensions[6].height = (45 if _show_note else 5)
+            ws.row_dimensions[7].height = (15 if _show_note else 5)
+        except Exception:
+            pass
+
+        # Row 8: spacer (merged A8:G8)
+        ws.merge_cells("A8:G8")
+
+        # Row 9: sample table title (merged, centered)
+        ws.merge_cells("A9:G9")
+        _tt = ws["A9"]
+        _tt.value = _t("template.xlsx.table_title") or "BẢNG MẪU"
+        _tt.font = Font(name=_TNR, size=12, bold=False)
+        _tt.alignment = Alignment(horizontal="center", vertical="center")
+        try:
+            ws.row_dimensions[9].height = 22
+        except Exception:
+            pass
+
+        # Sample rows: (question, [answers...], explanation)
+        samples = [
+            (
+                _t("template.xlsx.s1_q"),
+                [_t("template.xlsx.s1_a1"), _t("template.xlsx.s1_a2"),
+                 _t("template.xlsx.s1_a3"), _t("template.xlsx.s1_a4")],
+                _t("template.xlsx.s1_e"),
+            ),
+            (
+                _t("template.xlsx.s2_q"),
+                [_t("template.xlsx.s2_a1"), _t("template.xlsx.s2_a2")],
+                _t("template.xlsx.s2_e"),
+            ),
+            (
+                _t("template.xlsx.s3_q"),
+                [_t("template.xlsx.s3_a1")],
+                _t("template.xlsx.s3_e"),
+            ),
+            (
+                _t("template.xlsx.s4_q"),
+                [_t("template.xlsx.s4_a1"), _t("template.xlsx.s4_a2")],
+                _t("template.xlsx.s4_e"),
+            ),
+            (
+                _t("template.xlsx.s5_q"),
+                [_t("template.xlsx.s5_a1"), _t("template.xlsx.s5_a2")],
+                _t("template.xlsx.s5_e"),
+            ),
+        ]
+        if template_type == "millionaire":
+            samples = samples[:2]
+
+        _n_ans = 4
+        headers = (
+            [_t("template.xlsx.header_stt") or "STT",
+             _t("template.xlsx.header_question") or "Câu hỏi"]
+            + [_t("template.xlsx.header_answer", n=i) or f"Đáp án {i}" for i in range(1, _n_ans + 1)]
+            + [_t("template.xlsx.header_explain") or "Giải thích"]
+        )
+        _last_col = len(headers)
+        _last_letter = get_column_letter(_last_col)
+
+        # Row 10: yellow header
+        for col_idx, header in enumerate(headers, 1):
+            cell = ws.cell(row=10, column=col_idx, value=header)
+            cell.font = Font(name=_TNR, size=12, bold=True)
+            cell.fill = PatternFill(start_color=_YELLOW, end_color=_YELLOW, fill_type="solid")
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+            cell.border = _thin_border
+        try:
+            ws.row_dimensions[10].height = 22
+        except Exception:
+            pass
+
+        # Rows 11+: sample data with thin borders
+        for r_offset, (q_text, answers, expl) in enumerate(samples):
+            row_idx = 11 + r_offset
+            padded = list(answers[:_n_ans]) + [""] * max(0, _n_ans - len(answers))
+            values = [r_offset + 1, q_text] + padded + [expl]
+            for col_idx, value in enumerate(values, 1):
+                cell = ws.cell(row=row_idx, column=col_idx, value=value)
+                # Force inline text so leading '==' is NOT stored as a formula
                 try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(str(cell.value))
-                except:
+                    if isinstance(value, str) and value.startswith("="):
+                        cell.data_type = "s"
+                except Exception:
                     pass
-            adjusted_width = min(max_length + 2, 50)
-            ws.column_dimensions[column_letter].width = adjusted_width
-        
+                cell.font = Font(name=_TNR, size=12)
+                cell.alignment = Alignment(vertical="center", wrap_text=True)
+                cell.border = _thin_border
+
+        # Fixed column widths like the reference layout
+        for _letter, _width in (("A", 3.9), ("B", 30.9), ("C", 21.9), ("D", 24.7),
+                                ("E", 18.4), ("F", 16.4), ("G", 47.5)):
+            try:
+                ws.column_dimensions[_letter].width = _width
+            except Exception:
+                pass
+
         wb.save(file_path)
 
     def _create_sample_doc(self, file_path: str, lang: str = "vi", template_type: str = "general"):
@@ -1801,6 +2479,76 @@ class ImportService:
                     pass
         except Exception as e:
             raise RuntimeError(I18n.t("import.error.doc_template_failed", error=str(e)))
+
+    def split_into_chapters(self, file_path: str):
+        """Tách tài liệu thành các chương/bài tự động (hiểu sâu) - dùng cho AI tạo theo chương"""
+        file_path = self._resolve_user_file(file_path)
+        text = ""
+        try:
+            ext = Path(file_path).suffix.lower()
+            if ext == ".txt":
+                text = Path(file_path).read_text(encoding="utf-8", errors="ignore")
+            elif ext == ".pdf" and PDF_AVAILABLE:
+                doc = _lazy_fitz().open(file_path)
+                parts = []
+                for i in range(min(10, doc.page_count)):
+                    parts.append(doc.load_page(i).get_text("text"))
+                text = "\n".join(parts)
+            elif ext in [".docx", ".doc"] and DOCX_AVAILABLE:
+                doc = _lazy_docx_document()(file_path)
+                text = "\n".join([p.text for p in doc.paragraphs if p.text.strip()])
+            else:
+                text = Path(file_path).read_text(encoding="utf-8", errors="ignore")
+        except Exception:
+            text = ""
+        if not text.strip():
+            return []
+        import re
+        pattern = r'(?=^(?:Chương|Bài|Unit|Chapter|CHƯƠNG|BÀI)\s+[0-9IVXLC]+\b.*$)'
+        parts = re.split(pattern, text, flags=re.MULTILINE | re.IGNORECASE)
+        parts = [p.strip() for p in parts if p.strip()]
+        chapters = []
+        for idx, part in enumerate(parts, 1):
+            first_line = part.splitlines()[0].strip()[:80] if part.splitlines() else f"Chương {idx}"
+            title = first_line if re.match(r'^(?:Chương|Bài|Unit|Chapter)', first_line, re.IGNORECASE) else f"Phần {idx}: {first_line[:40]}"
+            chapters.append({"index": idx, "title": title, "content": part[:3000], "char_count": len(part)})
+        return chapters
+
+    def enhanced_dedup_check(self, new_question, existing):
+        """Kiểm tra trùng nâng cao: so sánh cả đáp án và ngữ nghĩa (dùng cho AI hiểu sâu)"""
+        try:
+            from eduplay.core.project_manager import ProjectManager
+            pm = ProjectManager()
+            base_dup = pm._is_duplicate_question(new_question, existing)
+            if base_dup:
+                return True
+            import re, unicodedata
+            def _norm(s):
+                s = str(s or "").lower()
+                s = unicodedata.normalize("NFD", s)
+                s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+                s = re.sub(r'[^a-z0-9\s]', ' ', s)
+                s = re.sub(r'\s+', ' ', s).strip()
+                return s
+            new_opts = new_question.get("options") or []
+            new_q = _norm(new_question.get("question") or "")
+            for ex in existing:
+                ex_q = _norm(ex.get("question") or "")
+                if new_q and ex_q:
+                    set_new = set(new_q.split())
+                    set_ex = set(ex_q.split())
+                    if set_new and set_ex:
+                        jacc = len(set_new & set_ex) / len(set_new | set_ex)
+                        if jacc > 0.85:
+                            ex_opts = ex.get("options") or []
+                            if new_opts and ex_opts:
+                                norm_new_opts = set(_norm(o) for o in new_opts if o)
+                                norm_ex_opts = set(_norm(o) for o in ex_opts if o)
+                                if len(norm_new_opts & norm_ex_opts) / max(len(norm_new_opts), 1) > 0.8:
+                                    return True
+            return False
+        except Exception:
+            return False
 """
 Nguyen-Thanh-Tan ¬_¬
 """

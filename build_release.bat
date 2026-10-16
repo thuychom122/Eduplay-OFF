@@ -43,6 +43,13 @@ if errorlevel 1 exit /b 1
 "%BUILD_PY%" -m pip install Cython Nuitka ordered-set zstandard --quiet
 if errorlevel 1 exit /b 1
 
+ echo [STEP 1b] Ensuring application icon exists...
+"%BUILD_PY%" "%ROOT%\tools\ensure_app_icon.py"
+if errorlevel 1 (
+    echo [ERROR] Could not create eduplay\resources\icons\icon.ico
+    exit /b 1
+)
+
  echo [STEP 2] Preparing isolated staging tree...
 if exist "%CD%\build_nuitka" rmdir /s /q "%CD%\build_nuitka"
 mkdir "%STAGE%"
@@ -61,9 +68,16 @@ if errorlevel 1 (
 )
 
  echo [STEP 4] Building standalone executable with Nuitka...
+ echo        Ensuring preview/quick-preview/play (QtWebEngine + WebView2) are bundled...
 "%BUILD_PY%" -m nuitka ^
   --standalone ^
   --enable-plugin=pyside6 ^
+  --enable-plugin=tk-inter ^
+  --include-qt-plugins=sensible,multimedia,texttospeech ^
+  --include-package=PySide6.QtWebEngineWidgets ^
+  --include-package=PySide6.QtWebEngineCore ^
+  --include-package=PySide6.QtTextToSpeech ^
+  --include-package=PySide6.QtMultimedia ^
   --windows-console-mode=disable ^
   --assume-yes-for-downloads ^
   --nofollow-import-to=fitz ^
@@ -75,6 +89,15 @@ if errorlevel 1 (
   --include-module=pythonnet ^
   --include-package=clr_loader ^
   --include-module=uuid ^
+  --include-package=speech_recognition ^
+  --include-module=sounddevice ^
+  --include-package-data=_sounddevice_data ^
+  --include-package=pyaudio ^
+  --include-package=numpy ^
+  --include-package=groq ^
+  --include-package=openpyxl ^
+  --include-package=docx ^
+  --include-package=PIL ^
   --output-dir="%NUITKA_OUT%" ^
   --output-filename=EduPlayStudio.exe ^
   --include-package=eduplay ^
@@ -123,10 +146,46 @@ if not exist "%EXE%" (
     exit /b 1
 )
 for %%F in ("%EXE%") do set "EXE_SIZE=%%~zF"
+
+echo [STEP 7] Verifying preview/quick-preview/play dependencies...
+set "MISSING=0"
+REM QtWebEngineProcess can be in PySide6\Qt\libexec or PySide6\ etc - search recursively
+dir /s /b "%RELEASE_DIR%\QtWebEngineProcess.exe" >nul 2>&1
+if errorlevel 1 (
+    dir /s /b "%DIST_DIR%\QtWebEngineProcess.exe" >nul 2>&1
+    if errorlevel 1 (
+        echo [WARN] QtWebEngineProcess.exe not found - xem truoc/play co the loi. Kiem tra --enable-plugin=pyside6 --include-qt-plugins.
+        set "MISSING=1"
+    )
+)
+REM Nuitka links code into the exe, so check data layout instead of eduplay\core
+if not exist "%RELEASE_DIR%\eduplay\resources\i18n\vi.json" (
+    if not exist "%DIST_DIR%\eduplay\resources\i18n\vi.json" (
+        echo [WARN] eduplay resources not found in dist - kiem tra --include-data-dir.
+        set "MISSING=1"
+    )
+)
+REM Quick smoke: check webview backend files
+if not exist "%RELEASE_DIR%\webview" (
+    if not exist "%DIST_DIR%\webview" (
+        echo [WARN] webview package not found - Edge preview se fallback sang QtWebEngine.
+    )
+)
+if "%MISSING%"=="0" echo [OK] Preview dependencies verified: QtWebEngine + webview present.
+
 echo.
 echo [DONE] EduPlayStudio.exe created.
 echo Output: %EXE%
 echo Published standalone folder: %RELEASE_DIR%
 echo Size: %EXE_SIZE% bytes
+echo.
+echo [NOTE] Test nhanh sau build:
+echo   1) Chay %RELEASE_DIR%\EduPlayStudio.exe
+echo   2) Tao/Mo du an -^> Soan cau hoi -^> Bam 'Xem nhanh' (mo 1 cau) - phai hien cua so preview ngay, co am thanh
+echo   3) Bam 'Xem truoc' (toan bo) - phai hien full game, khong trang den
+echo   4) Trang chu -^> Bam 'Choi' - phai hien danh sach va mo game toan man hinh
+echo   Neu trang den/chap cho 2 lan: kiem tra antivirus chan QtWebEngineProcess.exe
+echo   Neu exe tu tat ngay khi mo: mo file %LOCALAPPDATA%\EduPlayStudio\logs\crash.log de xem loi
+echo   (ban exe khong co console nen moi loi deu duoc ghi ra crash.log kem hop thoai bao loi).
 echo.
 exit /b 0

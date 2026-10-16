@@ -217,6 +217,7 @@ class EditorCenterPanel(QWidget):
     quick_preview_requested = Signal()  # Request quick preview for current question (single-question)
     unsaved_changed = Signal(bool)  # Notify when content becomes dirty
     game_config_updated = Signal(dict)  # Emits updated game config
+    notice = Signal(str)  # Canh bao nhe (vd anh qua lon) - khong chan nguoi dung
     
     def __init__(self):
         super().__init__()
@@ -1145,24 +1146,118 @@ class EditorCenterPanel(QWidget):
         self.options_stacked.addWidget(widget)
     
     def create_true_false_options(self):
-        """Create true/false options widget"""
+        """Create true/false options widget - đẹp, hiện đại, card style"""
         widget = QWidget()
         layout = QVBoxLayout()
-        layout.setSpacing(15)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(14)
+        
+        # Tiêu đề nhỏ
+        hint = QLabel(self._t("editor.center.true_false_hint", "Chọn đáp án đúng:"))
+        try:
+            hint.setStyleSheet("QLabel { color: #475467; font-size: 13px; font-weight: 600; background: transparent; }")
+        except Exception:
+            pass
+        layout.addWidget(hint)
+        
+        cards = QHBoxLayout()
+        cards.setSpacing(14)
         
         self.true_false_group = QButtonGroup()
+        self.true_false_group.setExclusive(True)
         
-        true_radio = QRadioButton(self._t("editor.center.true", "True"))
-        false_radio = QRadioButton(self._t("editor.center.false", "False"))
+        # Style theo theme
+        try:
+            theme = SettingsManager().get_theme() or 'light'
+        except Exception:
+            theme = 'light'
+        is_dark = str(theme).lower() == 'dark'
+        bg = '#1E1E24' if is_dark else '#FFFFFF'
+        fg = '#E5E7EB' if is_dark else '#1F2937'
+        border = '#3A3A40' if is_dark else '#E5E7EB'
+        hover_true_bg = '#1A2E1A' if is_dark else '#F0FDF4'
+        checked_true_bg = '#14332A' if is_dark else '#ECFDF3'
+        checked_true_fg = '#6EE7B7' if is_dark else '#065F46'
+        hover_false_bg = '#2E1A1A' if is_dark else '#FEF2F2'
+        checked_false_bg = '#331414' if is_dark else '#FEF2F2'
+        checked_false_fg = '#FCA5A5' if is_dark else '#991B1B'
+        card_style_true = f"""
+            QRadioButton {{
+                background-color: {bg};
+                border: 2px solid {border};
+                border-radius: 14px;
+                padding: 18px 16px;
+                font-size: 15px;
+                font-weight: 700;
+                color: {fg};
+                text-align: left;
+            }}
+            QRadioButton::indicator {{ width: 0px; height: 0px; }}
+            QRadioButton:hover {{ border-color: #10B981; background-color: {hover_true_bg}; }}
+            QRadioButton:checked {{ border-color: #10B981; background-color: {checked_true_bg}; color: {checked_true_fg}; }}
+        """
+        card_style_false = f"""
+            QRadioButton {{
+                background-color: {bg};
+                border: 2px solid {border};
+                border-radius: 14px;
+                padding: 18px 16px;
+                font-size: 15px;
+                font-weight: 700;
+                color: {fg};
+                text-align: left;
+            }}
+            QRadioButton::indicator {{ width: 0px; height: 0px; }}
+            QRadioButton:hover {{ border-color: #EF4444; background-color: {hover_false_bg}; }}
+            QRadioButton:checked {{ border-color: #EF4444; background-color: {checked_false_bg}; color: {checked_false_fg}; }}
+        """
+        
+        true_text = self._t("editor.center.true", "Đúng")
+        false_text = self._t("editor.center.false", "Sai")
+        # Thêm icon cho sinh động
+        true_radio = QRadioButton(f"  ✓   {true_text}")
+        false_radio = QRadioButton(f"  ✗   {false_text}")
+        true_radio.setObjectName("trueCard")
+        false_radio.setObjectName("falseCard")
+        true_radio.setStyleSheet(card_style_true)
+        false_radio.setStyleSheet(card_style_false)
+        true_radio.setCursor(Qt.PointingHandCursor)
+        false_radio.setCursor(Qt.PointingHandCursor)
+        # Đặt tooltip
+        try:
+            true_radio.setToolTip(true_text)
+            false_radio.setToolTip(false_text)
+        except Exception:
+            pass
+        # Chọn mặc định Sai như cũ (giữ hành vi)
         false_radio.setChecked(True)
+        
+        # Đặt chiều cao tối thiểu để card to đẹp, dễ bấm
+        for rb in (true_radio, false_radio):
+            try:
+                rb.setMinimumHeight(64)
+                rb.setMinimumWidth(140)
+                rb.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            except Exception:
+                pass
         
         self.true_false_group.addButton(true_radio)
         self.true_false_group.setId(true_radio, 1)
         self.true_false_group.addButton(false_radio)
         self.true_false_group.setId(false_radio, 0)
         
-        layout.addWidget(true_radio)
-        layout.addWidget(false_radio)
+        cards.addWidget(true_radio, 1)
+        cards.addWidget(false_radio, 1)
+        layout.addLayout(cards)
+        
+        # Ghi chú nhỏ dưới
+        note = QLabel(self._t("editor.center.true_false_note", "Mẹo: Chọn Đúng/Sai cho câu hỏi."))
+        try:
+            note.setStyleSheet("QLabel { color: #98A2B3; font-size: 12px; background: transparent; }")
+            note.setWordWrap(True)
+        except Exception:
+            pass
+        layout.addWidget(note)
         layout.addStretch()
         
         widget.setLayout(layout)
@@ -1764,10 +1859,38 @@ class EditorCenterPanel(QWidget):
             pass
     
     def delete_current_question(self):
-        """Emit delete action for current question"""
+        """Emit delete action for current question - có xác nhận"""
         try:
             if not self.current_question:
                 return
+            try:
+                from PySide6.QtWidgets import QMessageBox
+                from eduplay.core.i18n import I18n
+                from eduplay.core.settings_manager import SettingsManager
+                try:
+                    lang = SettingsManager().get_language() or "en"
+                except Exception:
+                    lang = "en"
+                try:
+                    title = I18n.t("editor.left.delete_confirm_title", lang)
+                except Exception:
+                    title = "Xác nhận xóa" if str(lang).lower().startswith("vi") else "Confirm delete"
+                qtext = ""
+                try:
+                    qtext = str(self.current_question.get("question") or "").strip()
+                except Exception:
+                    qtext = ""
+                preview = (qtext[:120] + "...") if len(qtext) > 120 else qtext
+                try:
+                    template = I18n.t("editor.left.delete_confirm_message", lang)
+                except Exception:
+                    template = "Bạn có chắc muốn xóa câu hỏi này?\n\n{question}" if str(lang).lower().startswith("vi") else "Are you sure you want to delete this question?\n\n{question}"
+                message = template.format(question=preview or ("Câu hỏi đang chọn" if str(lang).lower().startswith("vi") else "Selected question"))
+                from eduplay.ui.widgets.confirm_dialog import ask_confirm
+                if not ask_confirm(self, title, message, lang):
+                    return
+            except Exception:
+                pass
             payload = {
                 "action": "delete",
                 "question": self.current_question,
@@ -2076,6 +2199,27 @@ class EditorCenterPanel(QWidget):
             file_path, _ = QFileDialog.getOpenFileName(self, title, "", filters)
             if file_path:
                 self.question_image_path.setText(file_path)
+                # Anh nang lam app cham + file xuat ra to: canh bao nhe,
+                # van dung nguoi dung tiep tuc (soft limit).
+                try:
+                    from eduplay.core.perf_hints import image_size_warning
+
+                    _lang = "vi"
+                    try:
+                        from eduplay.core.i18n import I18n
+
+                        _lang = I18n.locale or "vi"
+                    except Exception:
+                        pass
+                    _msg = image_size_warning(file_path, _lang)
+                    if _msg:
+                        self.notice.emit(str(_msg))
+                        try:
+                            self.question_image_path.setToolTip(str(_msg))
+                        except Exception:
+                            pass
+                except Exception:
+                    pass
         except Exception:
             pass
     
@@ -2083,6 +2227,31 @@ class EditorCenterPanel(QWidget):
         """Preview the current question"""
         # Deprecated: per-question preview removed
         pass
+
+    def _notice_if_project_too_big(self):
+        """Nhac nhe neu bai qua 50 cau (chi 1 lan/phien, khong chan)."""
+        try:
+            if getattr(self, "_perf_hint_shown", False):
+                return
+            project = getattr(self, "current_project", None) or {}
+            questions = project.get("questions") or []
+            if not questions:
+                return
+            from eduplay.core.perf_hints import many_questions_warning
+
+            lang = "vi"
+            try:
+                from eduplay.core.i18n import I18n
+
+                lang = I18n.locale or "vi"
+            except Exception:
+                pass
+            msg = many_questions_warning(len(questions), lang)
+            if msg:
+                self._perf_hint_shown = True
+                self.notice.emit(str(msg))
+        except Exception:
+            pass
     
     def save_question(self):
         """Save the current question"""
@@ -2098,6 +2267,10 @@ class EditorCenterPanel(QWidget):
         question_data = self.get_question_data()
         self.current_question = question_data
         self.question_updated.emit(question_data)
+        try:
+            self._notice_if_project_too_big()
+        except Exception:
+            pass
         try:
             self.game_config_updated.emit(self.get_game_config_data())
         except Exception:

@@ -117,6 +117,10 @@ class EditorLeftPanel(QWidget):
         self.questions_list = QListWidget()
         self.questions_list.itemClicked.connect(self.on_question_selected)
         self.questions_list.currentItemChanged.connect(self._on_current_question_changed)
+        try:
+            self.questions_list.setTextElideMode(Qt.ElideRight)
+        except Exception:
+            pass
         layout.addWidget(self.questions_list)
 
         self.questions_list.hide()
@@ -144,12 +148,12 @@ class EditorLeftPanel(QWidget):
             pass
         layout.addWidget(icon_label)
 
-        title_label = QLabel("No questions yet")
+        title_label = QLabel(I18n.t("editor.left.no_questions"))
         title_label.setObjectName("editorQuestionsEmptyTitle")
         title_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(title_label)
 
-        subtitle_label = QLabel('Click "Add Question" or "Import"\nto get started!')
+        subtitle_label = QLabel(I18n.t("editor.left.no_questions_hint"))
         subtitle_label.setObjectName("editorQuestionsEmptySubtitle")
         subtitle_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(subtitle_label)
@@ -290,7 +294,7 @@ class EditorLeftPanel(QWidget):
                 background-color: #7F56D9;
                 color: #FFFFFF;
             }
-            QListView::item:hover:!selected {
+            QListView::item:hover {
                 background-color: #2A2A30;
             }
         """)
@@ -490,7 +494,7 @@ class EditorLeftPanel(QWidget):
                         background-color: #7F56D9;
                         color: white;
                     }}
-                    QTabBar::tab:hover:!selected {{
+                    QTabBar::tab:hover {{
                         background-color: {hover_bg};
                         color: {text_color};
                     }}
@@ -510,8 +514,9 @@ class EditorLeftPanel(QWidget):
                         padding: 8px 0px;
                     }}
                     QListWidget::item {{
-                        padding: 12px 14px;
+                        padding: 10px 14px;
                         border-bottom: 1px solid {list_divider};
+                        min-height: 40px;
                     }}
                     QListWidget::item:selected {{
                         background-color: #7F56D9;
@@ -898,13 +903,33 @@ class EditorLeftPanel(QWidget):
             pass
         
     def load_questions(self):
-        """Load questions from current project"""
+        """Load questions from current project - bảo toàn scroll và selection để không nhảy lên top"""
+        # lưu scroll và selection trước khi clear
+        prev_row = -1
+        prev_scroll = 0
+        try:
+            prev_row = int(self.questions_list.currentRow())
+        except Exception:
+            prev_row = -1
+        try:
+            vsb = self.questions_list.verticalScrollBar()
+            prev_scroll = int(vsb.value()) if vsb else 0
+        except Exception:
+            prev_scroll = 0
+        try:
+            self.questions_list.blockSignals(True)
+        except Exception:
+            pass
         self.questions_list.clear()
         has_questions = False
         if self.current_project and 'questions' in self.current_project:
             for i, question in enumerate(self.current_project['questions']):
-                item = QListWidgetItem(f"Q{i+1}: {question.get('question', 'Untitled')}")
+                q_text = question.get('question', 'Untitled')
+                display = f"Q{i+1}: {q_text}"
+                item = QListWidgetItem(display)
                 item.setData(Qt.UserRole, question)
+                item.setToolTip(display)
+                item.setSizeHint(QSize(0, 48))
                 self.questions_list.addItem(item)
             has_questions = self.questions_list.count() > 0
         try:
@@ -913,6 +938,23 @@ class EditorLeftPanel(QWidget):
         except Exception:
             pass
         self._update_question_action_buttons()
+        # khôi phục selection và scroll
+        try:
+            if has_questions and 0 <= prev_row < self.questions_list.count():
+                self.questions_list.setCurrentRow(prev_row)
+            # khôi phục scroll
+            try:
+                vsb = self.questions_list.verticalScrollBar()
+                if vsb:
+                    vsb.setValue(prev_scroll)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        try:
+            self.questions_list.blockSignals(False)
+        except Exception:
+            pass
 
     def _rebalance_question_points(self):
         try:
@@ -1173,6 +1215,15 @@ class EditorLeftPanel(QWidget):
             checks.append((field_key, check))
 
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel, parent=dialog)
+        try:
+            _ok_btn = buttons.button(QDialogButtonBox.Ok)
+            if _ok_btn is not None:
+                _ok_btn.setText(I18n.t("input.ok") if hasattr(I18n, "t") else "OK")
+            _cancel_btn = buttons.button(QDialogButtonBox.Cancel)
+            if _cancel_btn is not None:
+                _cancel_btn.setText(I18n.t("input.cancel") if hasattr(I18n, "t") else "Cancel")
+        except Exception:
+            pass
         buttons.accepted.connect(dialog.accept)
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)

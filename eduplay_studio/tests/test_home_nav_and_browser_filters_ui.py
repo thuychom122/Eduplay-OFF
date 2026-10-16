@@ -26,8 +26,10 @@ class TestHomeNavAndBrowserFiltersUi(unittest.TestCase):
         self.app.processEvents()
 
         self.assertEqual(drawer.quick_section_label.text(), "THAO TÁC\nNHANH")
-        self.assertEqual(drawer.btn_recent.text(), "Mở gần\nđây")
-        self.assertEqual(drawer.btn_publish.text(), "Xuất bản\nnhanh")
+        self.assertEqual(drawer.btn_recent.property("actionKey"), "play_recent")
+        self.assertEqual(drawer.btn_publish.property("actionKey"), "screenshot")
+        self.assertIn("Chơi", drawer.btn_recent.text().replace("\n", " "))
+        self.assertIn("Chụp", drawer.btn_publish.text().replace("\n", " "))
         self.assertEqual(drawer.btn_resume.text(), "Tiếp tục\nchỉnh sửa")
         self.assertTrue(drawer.btn_resume.isVisible())
 

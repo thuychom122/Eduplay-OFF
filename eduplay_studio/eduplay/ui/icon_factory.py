@@ -2,7 +2,7 @@ import math
 import re
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QFont, QFontMetricsF, QIcon, QPainter, QPainterPath, QPen, QPixmap
+from PySide6.QtGui import QColor, QFont, QFontDatabase, QFontMetricsF, QIcon, QPainter, QPainterPath, QPen, QPixmap
 from PySide6.QtWidgets import QApplication, QStyle
 
 from eduplay.core.asset_loader import materialize_asset_file
@@ -24,6 +24,7 @@ _ICON_GLYPHS = {
     "create": "+",
     "edit": "✎",
     "play": "▶",
+    "camera": "📷",
     "settings": "⚙️",
     "help": "❓",
 }
@@ -63,6 +64,53 @@ def build_glyph_icon(kind: str, color_hex: str, size: int) -> QIcon:
         font_family = "Segoe UI Emoji" if key in {"help", "settings"} else "Segoe UI Symbol"
         font = QFont(font_family)
         font.setPixelSize(max(12, int(size * 0.82)))
+        font.setBold(False)
+        p.setFont(font)
+        p.setPen(QColor(color_hex))
+        fm = QFontMetricsF(font)
+        bounds = fm.tightBoundingRect(glyph)
+        x = (pix.width() - bounds.width()) / 2.0 - bounds.left()
+        y = (pix.height() - bounds.height()) / 2.0 - bounds.top()
+        p.drawText(x, y, glyph)
+        p.end()
+        return QIcon(pix)
+    except Exception:
+        return QIcon()
+
+
+def build_emoji_icon(
+    text: str,
+    color_hex: str = "#374151",
+    size: int = 18,
+    font_family: str = "Segoe UI Emoji",
+) -> QIcon:
+    """Render 1 ky tu emoji/symbol thanh icon vector.
+
+    Emoji dua thang vao text cua QLabel/QListWidgetItem se bi o vuong khi font
+    dang dung (Times New Roman...) khong co glyph va Qt khong fallback. Ve san
+    vao pixmap voi font emoji rieng (Segoe UI Emoji) thi luon hien dung.
+    """
+    glyph = str(text or "").strip()
+    if not glyph:
+        return QIcon()
+    try:
+        pix = QPixmap(int(size), int(size))
+        pix.fill(Qt.transparent)
+        p = QPainter(pix)
+        p.setRenderHint(QPainter.Antialiasing, True)
+        p.setRenderHint(QPainter.TextAntialiasing, True)
+        family = str(font_family or "Segoe UI Emoji")
+        try:
+            fams = QFontDatabase.families()
+        except Exception:
+            fams = []
+        if fams:
+            for cand in (family, "Segoe UI Emoji", "Segoe UI Symbol", "Segoe UI"):
+                if cand in fams:
+                    family = cand
+                    break
+        font = QFont(family)
+        font.setPixelSize(max(12, int(size * 0.86)))
         font.setBold(False)
         p.setFont(font)
         p.setPen(QColor(color_hex))
@@ -125,7 +173,7 @@ def build_standard_ui_icon(
 ) -> QIcon:
     style_obj = style or QApplication.style()
     key = str(kind or "").lower()
-    if key in {"help", "settings"}:
+    if key in ("help", "settings"):
         glyph_icon = build_glyph_icon(key, color_hex, size)
         if not glyph_icon.isNull():
             return glyph_icon
@@ -143,11 +191,6 @@ def build_standard_ui_icon(
     if style_obj is not None:
         fallback_pixmaps = {
             "help": (QStyle.StandardPixmap.SP_MessageBoxQuestion,),
-            "settings": (
-                QStyle.StandardPixmap.SP_FileDialogDetailedView,
-                QStyle.StandardPixmap.SP_FileDialogInfoView,
-                QStyle.StandardPixmap.SP_ComputerIcon,
-            ),
         }.get(key, ())
         for pixmap_kind in fallback_pixmaps:
             try:
@@ -156,6 +199,13 @@ def build_standard_ui_icon(
                     return icon
             except Exception:
                 pass
+    if key == "settings":
+        try:
+            line_icon = build_line_icon("settings", color_hex, size, stroke_width=1.9)
+            if not line_icon.isNull():
+                return line_icon
+        except Exception:
+            pass
     asset_fallback = {"help": "play"}.get(key)
     if asset_fallback:
         pix = build_stock_icon_pixmap(asset_fallback, size)
@@ -274,11 +324,30 @@ def build_line_icon_pixmap(kind: str, color_hex: str, size: int, stroke_width: f
             p.drawLine(cx, y, cx - int(size * 0.14), y - int(size * 0.14))
             p.drawLine(cx, y, cx + int(size * 0.14), y - int(size * 0.14))
     elif kind == "resume":
-        p.drawLine(int(size * 0.74), int(size * 0.72), int(size * 0.60), int(size * 0.58))
-        p.drawLine(int(size * 0.60), int(size * 0.58), int(size * 0.30), int(size * 0.28))
-        p.drawLine(int(size * 0.38), int(size * 0.20), int(size * 0.22), int(size * 0.36))
-        p.drawLine(int(size * 0.78), int(size * 0.76), int(size * 0.66), int(size * 0.88))
-        p.drawLine(int(size * 0.78), int(size * 0.76), int(size * 0.84), int(size * 0.90))
+        # Icon line sắc nét cho "Tiếp tục chỉnh sửa" — dạng resume: thanh dọc + tam giác play
+        # Vẽ nét mảnh, bo tròn để không mờ ở size nhỏ
+        bar_x = int(size * 0.32)
+        bar_w = max(2, int(size * 0.10))
+        bar_y1 = int(size * 0.22)
+        bar_y2 = int(size * 0.78)
+        # Thanh dọc bên trái (pause bar)
+        p.drawLine(bar_x + bar_w//2, bar_y1, bar_x + bar_w//2, bar_y2)
+        # Tam giác play bên phải
+        tri_x1 = int(size * 0.48)
+        tri_x2 = int(size * 0.76)
+        tri_y_mid = size // 2
+        tri_y1 = int(size * 0.24)
+        tri_y2 = int(size * 0.76)
+        p.setBrush(QColor(color_hex))
+        p.setPen(Qt.NoPen)
+        path = QPainterPath()
+        path.moveTo(tri_x1, tri_y1)
+        path.lineTo(tri_x2, tri_y_mid)
+        path.lineTo(tri_x1, tri_y2)
+        path.closeSubpath()
+        p.drawPath(path)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(pen)
     elif kind == "save":
         x = int(size * 0.18)
         y = int(size * 0.18)

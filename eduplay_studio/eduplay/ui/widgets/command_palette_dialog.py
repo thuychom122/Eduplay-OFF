@@ -8,15 +8,89 @@ from eduplay.core.i18n import I18n
 class CommandPaletteDialog(QDialog):
     item_triggered = Signal(dict)
 
-    def __init__(self, items: list[dict] | None = None, parent=None, lang: str = "en"):
+    DARK_QSS = """
+            QDialog#command-palette {
+                background-color: #101828;
+                border: 1px solid #344054;
+                border-radius: 16px;
+            }
+            QLineEdit {
+                background-color: #182230;
+                color: #F8FAFC;
+                border: 1px solid #475467;
+                border-radius: 12px;
+                padding: 12px 14px;
+                font-size: 14px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #7F56D9;
+            }
+            QListWidget {
+                background-color: #101828;
+                border: none;
+                color: #E5E7EB;
+                outline: none;
+            }
+            QListWidget::item {
+                border: 1px solid transparent;
+                border-radius: 10px;
+                padding: 10px 12px;
+                margin: 2px 0px;
+            }
+            QListWidget::item:selected {
+                background-color: #1D2939;
+                border: 1px solid #7F56D9;
+                color: #F8FAFC;
+            }
+            """
+
+    LIGHT_QSS = """
+            QDialog#command-palette {
+                background-color: #FFFFFF;
+                border: 1px solid #E5E7EB;
+                border-radius: 16px;
+            }
+            QLineEdit {
+                background-color: #FFFFFF;
+                color: #1F2937;
+                border: 1px solid #D1D5DB;
+                border-radius: 12px;
+                padding: 12px 14px;
+                font-size: 14px;
+            }
+            QLineEdit:focus {
+                border: 1px solid #7F56D9;
+            }
+            QListWidget {
+                background-color: #FFFFFF;
+                border: none;
+                color: #1F2937;
+                outline: none;
+            }
+            QListWidget::item {
+                border: 1px solid transparent;
+                border-radius: 10px;
+                padding: 10px 12px;
+                margin: 2px 0px;
+            }
+            QListWidget::item:selected {
+                background-color: #E9E4F5;
+                border: 1px solid #7F56D9;
+                color: #3B1F7A;
+            }
+            """
+
+    def __init__(self, items: list[dict] | None = None, parent=None, lang: str = "en", theme: str | None = None):
         super().__init__(parent)
         self._lang = str(lang or "en")
+        self._theme = self._resolve_theme(theme)
         self._all_items = list(items or [])
         self.setModal(True)
         self.setWindowFlags(Qt.Dialog | Qt.FramelessWindowHint)
         self.setMinimumWidth(620)
         self.setObjectName("command-palette")
         self._build()
+        self.apply_theme(self._theme)
         self.set_items(self._all_items)
 
     def _t(self, vi: str, en: str) -> str:
@@ -61,42 +135,40 @@ class CommandPaletteDialog(QDialog):
         self.list_widget.itemClicked.connect(self._emit_item)
         root.addWidget(self.list_widget, 1)
 
-        self.setStyleSheet(
-            """
-            QDialog#command-palette {
-                background-color: #101828;
-                border: 1px solid #344054;
-                border-radius: 16px;
-            }
-            QLineEdit {
-                background-color: #182230;
-                color: #F8FAFC;
-                border: 1px solid #475467;
-                border-radius: 12px;
-                padding: 12px 14px;
-                font-size: 14px;
-            }
-            QLineEdit:focus {
-                border: 1px solid #7F56D9;
-            }
-            QListWidget {
-                background-color: #101828;
-                border: none;
-                color: #E5E7EB;
-                outline: none;
-            }
-            QListWidget::item {
-                border: 1px solid transparent;
-                border-radius: 10px;
-                padding: 10px 12px;
-                margin: 2px 0px;
-            }
-            QListWidget::item:selected {
-                background-color: #1D2939;
-                border: 1px solid #7F56D9;
-            }
-            """
-        )
+    @staticmethod
+    def _resolve_theme(theme: str | None) -> str:
+        try:
+            t = str(theme or "").strip().lower()
+        except Exception:
+            t = ""
+        if t in ("light", "dark"):
+            return t
+        try:
+            from eduplay.core.settings_manager import SettingsManager
+            t2 = str(SettingsManager().get_theme() or "").strip().lower()
+            if t2 in ("light", "dark"):
+                return t2
+        except Exception:
+            pass
+        return "light"
+
+    def apply_theme(self, theme: str | None = None):
+        try:
+            t = self._resolve_theme(theme if theme is not None else getattr(self, "_theme", None))
+        except Exception:
+            t = "light"
+        self._theme = t
+        try:
+            if t == "dark":
+                self.title_label.setStyleSheet("QLabel{font-size:18px;font-weight:800;color:#E5E7EB;}")
+                self.hint_label.setStyleSheet("QLabel{font-size:12px;color:#98A2B3;}")
+                self.setStyleSheet(self.DARK_QSS)
+            else:
+                self.title_label.setStyleSheet("QLabel{font-size:18px;font-weight:800;color:#0F172A;}")
+                self.hint_label.setStyleSheet("QLabel{font-size:12px;color:#64748B;}")
+                self.setStyleSheet(self.LIGHT_QSS)
+        except Exception:
+            pass
 
     def set_items(self, items: list[dict] | None):
         self._all_items = list(items or [])
@@ -115,9 +187,9 @@ class CommandPaletteDialog(QDialog):
         subtitle = str(item.get("subtitle") or "").strip()
         markers: list[str] = []
         if bool(item.get("is_current")):
-            markers.append(self._t("đang mở", "open"))
+            markers.append(self._t("command_palette.currently_open", "open"))
         if bool(item.get("is_recent")):
-            markers.append(self._t("gần đây", "recent"))
+            markers.append(self._t("command_palette.recent", "recent"))
         if markers:
             title = f"{title} [{' / '.join(markers)}]"
         if subtitle:

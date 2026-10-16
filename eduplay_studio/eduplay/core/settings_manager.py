@@ -14,6 +14,47 @@ from datetime import datetime
 from eduplay.core.path_resolver import PathResolver
 
 
+def _resolve_documents_directory() -> Path:
+    """Return the user's Documents directory (OneDrive-aware, handles all Windows cases)."""
+    try:
+        return PathResolver.resolve_documents()
+    except Exception:
+        pass
+    # Fallback - should not happen, but keep for safety
+    try:
+        return PathResolver._resolve_documents_with_fallback()
+    except Exception:
+        pass
+    if os.name == "nt":
+        try:
+            import ctypes
+            import uuid
+
+            guid_bytes = uuid.UUID("{FDD39AD0-238F-46AF-ADB4-6C85480369C7}").bytes_le
+            guid_buf = (ctypes.c_ubyte * 16).from_buffer_copy(guid_bytes)
+            path_ptr = ctypes.c_void_p()
+            hr = ctypes.windll.shell32.SHGetKnownFolderPath(
+                ctypes.cast(guid_buf, ctypes.c_void_p), 0, None, ctypes.byref(path_ptr)
+            )
+            if hr == 0 and path_ptr.value:
+                result = ctypes.wstring_at(path_ptr.value)
+                try:
+                    ctypes.windll.ole32.CoTaskMemFree(path_ptr)
+                except Exception:
+                    pass
+                if result:
+                    return Path(result)
+        except Exception:
+            pass
+        user_profile = os.environ.get("USERPROFILE") or ""
+        if user_profile:
+            return Path(user_profile) / "Documents"
+    home = os.environ.get("HOME") or ""
+    if home:
+        return Path(home) / "Documents"
+    return Path.home() / "Documents"
+
+
 class SettingsManager:
     """Manages application settings and API keys"""
 
@@ -29,20 +70,23 @@ class SettingsManager:
         self._settings_file_header_lines: list[str] = []
         self._has_rc2_header = False
         self._needs_rc2_whats_new = False
-        self._settings_file_existed_on_load = False
+        self._settings_file_existed_on_load = False  # RC2 WhatsNew removed
         self.load_settings()
     
     def _get_settings_directory(self) -> Path:
         """Get the settings directory path"""
         try:
-            settings_dir = PathResolver.resolve_settings_dir()
+            settings_dir = _resolve_documents_directory() / "EduPlay" / "Settings"
         except Exception:
             try:
-                user_profile = os.environ.get('USERPROFILE') or os.environ.get('HOME')
-                base = Path(user_profile) if user_profile else Path(os.getcwd())
-                settings_dir = base / "EduPlay" / "Settings"
+                settings_dir = PathResolver.resolve_settings_dir()
             except Exception:
-                settings_dir = Path(os.getcwd()) / ".eduplay_settings"
+                try:
+                    user_profile = os.environ.get('USERPROFILE') or os.environ.get('HOME')
+                    base = Path(user_profile) if user_profile else Path(os.getcwd())
+                    settings_dir = base / "EduPlay" / "Settings"
+                except Exception:
+                    settings_dir = Path(os.getcwd()) / ".eduplay_settings"
         try:
             settings_dir.mkdir(parents=True, exist_ok=True)
         except Exception:
@@ -199,14 +243,30 @@ class SettingsManager:
         return changed
     
     def load_settings(self):
-        """Load settings from file"""
+        """Load settings from file - OneDrive-aware with Files On-Demand hydration."""
         migrated = False
         try:
+            # Ensure file is hydrated if on OneDrive (resolve via PathResolver)
+            try:
+                rp = PathResolver.resolve_user_file(str(self.settings_file))
+                if rp and rp.exists():
+                    self.settings_file = rp
+                else:
+                    rp2 = PathResolver.resolve_user_file_any(str(self.settings_file))
+                    if rp2 and rp2.exists():
+                        self.settings_file = rp2
+            except Exception:
+                pass
             if self.settings_file.exists():
                 self._settings_file_existed_on_load = True
                 raw_text = ""
                 try:
-                    raw_text = self.settings_file.read_text(encoding="utf-8")
+                    # Try resolver-aware open first (handles cloud hydration, long path)
+                    try:
+                        with PathResolver.open_readable(str(self.settings_file), mode="r") as f:
+                            raw_text = f.read()
+                    except Exception:
+                        raw_text = self.settings_file.read_text(encoding="utf-8")
                 except Exception:
                     with open(self.settings_file, "r", encoding="utf-8") as f:
                         raw_text = f.read()
@@ -261,8 +321,27 @@ class SettingsManager:
             pass
     
     def save_settings(self):
-        """Save settings to file"""
+        """Save settings to file - OneDrive-aware."""
         try:
+            # Ensure parent dir exists (handles OneDrive)
+            try:
+                self.settings_file.parent.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                pass
+            # Try long-path aware open for OneDrive
+            try:
+                # Use normal open but with resolver-normalized path
+                norm = PathResolver.normalize_user_path(str(self.settings_file))
+                if norm:
+                    # Ensure we use resolved parent if needed
+                    try:
+                        pp = PathResolver.resolve_user_file_any(str(Path(norm).parent))
+                        if pp and pp.exists():
+                            self.settings_file = pp / Path(norm).name
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             with open(self.settings_file, "w", encoding="utf-8") as f:
                 header = self._settings_file_header_lines or []
                 if header:
@@ -307,8 +386,7 @@ class SettingsManager:
         return False
 
     def needs_rc2_whats_new(self) -> bool:
-        existed = bool(getattr(self, "_settings_file_existed_on_load", False))
-        return existed and bool(getattr(self, "_needs_rc2_whats_new", False))
+        return False  # Removed What's New RC2 feature
 
     @property
     def settings_file_existed(self) -> bool:
@@ -316,30 +394,22 @@ class SettingsManager:
         return bool(getattr(self, "_settings_file_existed_on_load", False))
 
     def should_run_first_time_flow(self) -> bool:
-        """True only for a genuinely new install with no pre-existing settings file."""
-        existed = bool(getattr(self, "_settings_file_existed_on_load", False))
-        if existed:
-            return False
+        """True while the user has never completed first-run onboarding.
+
+        The `first_run` flag (cleared on onboarding completion) is the
+        source of truth - NOT file existence. A settings file may exist
+        with first_run still true when a previous launch crashed (or was
+        closed) before onboarding finished; those users must still be
+        prompted (e.g. language choice) instead of silently booting
+        defaults.
+        """
         try:
             return bool(self.get("first_run", True))
         except Exception:
             return True
 
     def ensure_rc2_header(self):
-        try:
-            if not self.settings_file.exists():
-                return
-        except Exception:
-            return
-        if bool(getattr(self, "_has_rc2_header", False)):
-            return
-        header = list(getattr(self, "_settings_file_header_lines", []) or [])
-        if not self._header_has_token(header, self.RC2_HEADER_TOKEN):
-            header.insert(0, self.RC2_HEADER_LINE)
-        self._settings_file_header_lines = header
-        self._has_rc2_header = True
-        self._needs_rc2_whats_new = False
-        self.save_settings()
+        return  # Removed What's New RC2 feature
     
     def _get_default_settings(self) -> Dict[str, Any]:
         """Get default settings"""
@@ -558,6 +628,31 @@ class SettingsManager:
         try:
             from eduplay.core.i18n import I18n
             I18n.set_locale(language)
+        except Exception:
+            pass
+
+    def get_device_name(self) -> str:
+        """Ten than thien cua may (user tu dat, mac dinh = ten may Windows)."""
+        try:
+            saved = str(self.get("device_name", "") or "").strip()
+        except Exception:
+            saved = ""
+        if saved:
+            return saved[:60]
+        try:
+            import platform as _platform
+
+            node = str(_platform.node() or "").strip()
+            if node:
+                return node[:60]
+        except Exception:
+            pass
+        return ""
+
+    def set_device_name(self, name: str):
+        """Set device friendly name"""
+        try:
+            self.set("device_name", str(name or "").strip()[:60])
         except Exception:
             pass
     

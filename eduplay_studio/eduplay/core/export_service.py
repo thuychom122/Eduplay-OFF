@@ -3,8 +3,11 @@ Export Service - Handles HTML and native game exports
 """
 
 import os
+import warnings
+warnings.filterwarnings("ignore", category=SyntaxWarning)
 import json
 import shutil
+import threading
 import zipfile
 import base64
 import hashlib
@@ -17,10 +20,44 @@ from jinja2 import Template
 from eduplay.core.i18n import I18n
 from eduplay.core.asset_bundler import AssetBundler
 from eduplay.core.asset_loader import load_asset_text, load_asset_bytes, get_asset_path
+from eduplay.core.path_resolver import PathResolver
 try:
     from eduplay.core.template_merger import MillionaireTemplateMerger
 except Exception:
     MillionaireTemplateMerger = None
+
+# Khoa bao ve firebase_admin.initialize_app khi publish/preview chay tren
+# nhieu background thread (tranh 2 thread cung init app Firebase).
+_FIREBASE_ADMIN_LOCK = threading.RLock()
+
+
+def _firebase_ensure_app(cred, options: dict) -> bool:
+    """Khoi tao firebase_admin app 1 lan duy nhat (thread-safe)."""
+    try:
+        import firebase_admin
+
+        try:
+            if firebase_admin._apps:
+                return True
+        except Exception:
+            pass
+        with _FIREBASE_ADMIN_LOCK:
+            try:
+                if firebase_admin._apps:
+                    return True
+            except Exception:
+                pass
+            try:
+                firebase_admin.initialize_app(cred, dict(options or {}))
+                return True
+            except Exception:
+                # App da ton tai (race) thi coi nhu OK
+                try:
+                    return bool(firebase_admin._apps)
+                except Exception:
+                    return False
+    except Exception:
+        return False
 
 class ExportService:
     """Service for exporting projects to various formats"""
@@ -30,7 +67,16 @@ class ExportService:
         "fishing": "ba805ea048fafe69620d391ede85e09218c128651c55464abb8462256624ff25",
         "millionaire": "845a60a2515f53b2a0257d057ec987273a24de50f0a32b7bd345c2ccd8796597",
     }
-    
+
+    PLAY_BASE_URL = "https://game.eduplay-studio.io.vn"
+
+    PLAY_BASE_URL = "https://game.eduplay-studio.io.vn"
+
+    DATABASE_URL = "https://eduplay-game-default-rtdb.firebaseio.com"
+
+    # Link publish tu dong het han sau so ngay nay (dong bo voi cleanup).
+    PUBLISH_TTL_DAYS = 15
+
     def __init__(self):
         """Initialize export service"""
         self.templates_dir = Path(__file__).parent.parent.parent / "assets_bundle" / "templates"
@@ -182,37 +228,60 @@ class ExportService:
         try:
             if not p:
                 return ''
-            if isinstance(p, str) and p.startswith('data:'):
-                return p
-            p = str(p).replace('file://', '')
-            p = p.strip().strip('"').strip("'").replace('\\', '/')
-            if os.path.isabs(p) and os.path.exists(p):
-                return p
-            if p.startswith('assets/'):
-                rel = p[len('assets/'):]
+            if isinstance(p, str) and str(p).strip().lower().startswith('data:'):
+                return str(p).strip()
+            # Use robust PathResolver to handle file://, %20, quotes, backslashes, OneDrive
+            norm = PathResolver.normalize_user_path(str(p))
+            if not norm:
+                return ''
+            # Try to resolve to an existing file (handles OneDrive/local swap)
+            resolved = PathResolver.resolve_user_file(norm)
+            if resolved is not None:
+                return str(resolved)
+            # Check assets/ prefix relative to bundle
+            if norm.startswith('assets/'):
+                rel = norm[len('assets/'):]
                 full = str(self.assets_dir / rel)
                 if os.path.exists(full):
                     return full
-            full = str(self.assets_dir / p)
+            full = str(self.assets_dir / norm)
             if os.path.exists(full):
                 return full
-            return p
+            # Return normalized path so callers can still attempt exists checks
+            return norm
         except Exception:
             return str(p or '')
     
-    def _file_to_base64(self, file_path: str) -> str:
-        """Convert a file to Base64 string"""
+    def _file_to_base64(self, file_path: str, force_base64: bool = False) -> str:
+        """Convert a file to a base64 data URI.
+
+        Handles Windows paths robustly (file://, %20, quotes, OneDrive/local swap)
+        via PathResolver. Always returns a data: URI — never file:// — so images
+        display correctly in every template, preview and published export.
+        The previous >150KB file:// optimization broke millionaire (filtered out)
+        and cross-origin WebView2 after publish, so it is removed.
+        """
         try:
-            if isinstance(file_path, str) and file_path.startswith('data:'):
-                return file_path
-            if isinstance(file_path, str) and file_path.startswith('file://'):
-                file_path = file_path.replace('file://', '')
-            if isinstance(file_path, str):
-                file_path = file_path.strip().strip('"').strip("'")
-            path = Path(file_path)
-            if not path.exists():
+            if isinstance(file_path, str) and str(file_path).strip().lower().startswith('data:'):
+                return str(file_path).strip()
+            # Normalize and resolve via PathResolver (handles file://, %20, quotes, OneDrive)
+            norm = PathResolver.normalize_user_path(str(file_path))
+            if not norm:
                 return ""
-            
+            resolved = PathResolver.resolve_user_file(norm)
+            if resolved is not None:
+                path = resolved
+            else:
+                path = Path(norm)
+                if not path.exists():
+                    # Fallback: try _resource_path logic for assets/
+                    rp = self._resource_path(str(file_path))
+                    if rp and rp != norm:
+                        path = Path(rp)
+                    if not path.exists():
+                        return ""
+            # Keep force_base64 param for API compatibility but always use base64
+            # (file:// URIs are blocked cross-origin and filtered by template_merger)
             with open(path, 'rb') as f:
                 file_data = f.read()
                 base64_data = base64.b64encode(file_data).decode('utf-8')
@@ -271,29 +340,88 @@ class ExportService:
         except Exception:
             pass
         
+        # Resolve project dir for relative media/ paths (for _bundle_media_files called without explicit project_dir)
+        _proj_dir_for_media = None
+        try:
+            _pid = str(bundled_data.get("id") or "").strip()
+            if _pid:
+                from eduplay.core.path_resolver import PathResolver as _PR
+                _proj_dir_for_media = _PR.resolve_projects_dir() / _pid
+        except Exception:
+            _proj_dir_for_media = None
+
+        def _resolve_user_file_path(raw) -> Optional[Path]:
+            if not raw or str(raw).strip().lower().startswith("data:"):
+                return None
+            try:
+                p = PathResolver.resolve_user_file(str(raw), project_dir=_proj_dir_for_media)
+                if p is not None:
+                    return p
+                rp = self._resource_path(str(raw))
+                if rp and Path(rp).exists():
+                    return Path(rp)
+            except Exception:
+                pass
+            return None
+
+        def _resolve_user_file_exists(raw) -> bool:
+            return _resolve_user_file_path(raw) is not None
+
         # Process questions for media references
         if 'questions' in bundled_data:
             for question in bundled_data['questions']:
-                # Bundle question images
+                # Bundle question images (robust path resolution for Win/OneDrive/file:///%20)
                 if 'image' in question and question['image']:
                     image_path = question['image']
-                    if os.path.exists(image_path):
-                        question['image_base64'] = self._file_to_base64(image_path)
+                    # Already a data: URI -> keep as is for convenience
+                    if isinstance(image_path, str) and str(image_path).strip().lower().startswith("data:"):
+                        question['image_base64'] = str(image_path).strip()
+                    else:
+                        rp = _resolve_user_file_path(image_path)
+                        if rp is not None:
+                            b64 = self._file_to_base64(str(rp))
+                            if b64:
+                                question['image_base64'] = b64
+                        else:
+                            # Fallback: also check image_base64 field if image missing but base64 exists
+                            if question.get('image_base64') and str(question['image_base64']).strip().lower().startswith('data:'):
+                                pass
+                            else:
+                                # Try alternative keys (image_path, image_url)
+                                for alt_key in ("image_path", "imagePath", "image_url", "imageUrl"):
+                                    alt_val = question.get(alt_key)
+                                    rp2 = _resolve_user_file_path(alt_val) if alt_val else None
+                                    if rp2 is not None:
+                                        b64 = self._file_to_base64(str(rp2))
+                                        if b64:
+                                            question['image_base64'] = b64
+                                            break
                 
                 # Bundle question audio
                 if 'audio' in question and question['audio']:
                     audio_path = question['audio']
-                    if os.path.exists(audio_path):
-                        question['audio_base64'] = self._file_to_base64(audio_path)
+                    if isinstance(audio_path, str) and str(audio_path).strip().lower().startswith("data:"):
+                        question['audio_base64'] = str(audio_path).strip()
+                    else:
+                        rp = _resolve_user_file_path(audio_path)
+                        if rp is not None:
+                            b64 = self._file_to_base64(str(rp))
+                            if b64:
+                                question['audio_base64'] = b64
                 
                 # Bundle option images for multiple choice
                 if 'options' in question and 'option_images' in question:
                     bundled_option_images = []
                     for img_path in question['option_images']:
-                        if img_path and os.path.exists(img_path):
-                            bundled_option_images.append(self._file_to_base64(img_path))
+                        if img_path and isinstance(img_path, str) and str(img_path).strip().lower().startswith("data:"):
+                            bundled_option_images.append(str(img_path).strip())
                         else:
-                            bundled_option_images.append("")
+                            rp = _resolve_user_file_path(img_path) if img_path else None
+                            if rp is not None:
+                                b64 = self._file_to_base64(str(rp))
+                                bundled_option_images.append(b64 if b64 else "")
+                            else:
+                                bundled_option_images.append("")
                     question['option_images_base64'] = bundled_option_images
                 # Normalize schema for quiz questions
                 try:
@@ -396,14 +524,20 @@ class ExportService:
                 except Exception:
                     pass
         
-        # Bundle global media files
+        # Bundle global media files (robust path resolution)
         if 'media_files' in bundled_data:
             bundled_media_files = []
             for media_file in bundled_data['media_files']:
-                if 'path' in media_file and os.path.exists(media_file['path']):
+                raw_path = media_file.get('path') if isinstance(media_file, dict) else None
+                rp = _resolve_user_file_path(raw_path) if raw_path else None
+                if rp is not None:
                     bundled_file = media_file.copy()
-                    bundled_file['base64_data'] = self._file_to_base64(media_file['path'])
+                    b64 = self._file_to_base64(str(rp))
+                    if b64:
+                        bundled_file['base64_data'] = b64
                     bundled_media_files.append(bundled_file)
+                elif isinstance(media_file, dict) and media_file.get('base64_data'):
+                    bundled_media_files.append(media_file)
             bundled_data['media_files'] = bundled_media_files
         
         # Bundle game_config assets (fish sprites, sounds)
@@ -435,20 +569,18 @@ class ExportService:
         def resolve_asset_path(p: str) -> str:
             if not p:
                 return ''
-            if isinstance(p, str) and p.startswith('data:'):
-                return p
-            p = p.replace('file://', '')
-            p = p.strip().strip('"').strip("'")
-            p = p.replace('\\', '/')
-            # Check if it's an absolute path first
-            if os.path.isabs(p) and os.path.exists(p):
-                return p
-            # Check if it's a path relative to assets
-            if p.startswith('assets/'):
-                rel = p[len('assets/'):]
-                full = str(self.assets_dir / rel)
-                if os.path.exists(full):
-                    return full
+            if isinstance(p, str) and str(p).strip().lower().startswith('data:'):
+                return str(p).strip()
+            # Use robust resolver
+            norm = PathResolver.normalize_user_path(str(p))
+            if not norm:
+                return ''
+            resolved = PathResolver.resolve_user_file(norm, project_dir=_proj_dir_for_media)
+            if resolved is not None:
+                return str(resolved)
+            rp = self._resource_path(str(p))
+            if rp and Path(rp).exists():
+                return rp
             # Check if it's a direct file in assets
             full = str(self.assets_dir / p)
             if os.path.exists(full):
@@ -515,11 +647,13 @@ class ExportService:
                         pass
                 return
                 
-            p = p.replace('\\', '/')
-            full_path = self._resource_path(p)
+            norm_p = PathResolver.normalize_user_path(str(p))
+            full_path = self._resource_path(str(p))
+            resolved = PathResolver.resolve_user_file(norm_p, project_dir=_proj_dir_for_media)
+            check_path = str(resolved) if resolved is not None else full_path
             
-            if os.path.exists(full_path):
-                game_config[out_key] = self._file_to_base64(full_path)
+            if check_path and Path(check_path).exists():
+                game_config[out_key] = self._file_to_base64(check_path)
             else:
                 try:
                     import os as _os
@@ -576,18 +710,22 @@ class ExportService:
         # Bundle background image if specified
         bg_image = game_config.get('background_image')
         if bg_image:
-            bg_path = self._resource_path(bg_image)
-            if os.path.exists(bg_path):
-                game_config['background_image_base64'] = self._file_to_base64(bg_path)
+            bg_norm = PathResolver.normalize_user_path(str(bg_image))
+            bg_resolved = PathResolver.resolve_user_file(bg_norm, project_dir=_proj_dir_for_media)
+            bg_path = str(bg_resolved) if bg_resolved is not None else self._resource_path(str(bg_image))
+            if bg_path and Path(bg_path).exists():
+                b64 = self._file_to_base64(bg_path)
+                if b64:
+                    game_config['background_image_base64'] = b64
             else:
                 print(f"Warning: Background image not found: {bg_image}")
 
 
 
-        # Bundle fishing environment assets (backgrounds and seaweed)
+        # Bundle fishing environment assets — only for fishing games (heavy 15+ MB base64, skip for preview)
         try:
             default_dir = self.assets_dir / 'kenney_platformer-kit' / 'PNG' / 'Default'
-            if default_dir.exists():
+            if default_dir.exists() and is_fishing_mode:
                 def _bundle_default_pngs(names):
                     encoded = {}
                     for fn in names:
@@ -727,6 +865,238 @@ class ExportService:
         except Exception:
             return "game"
 
+    def _get_publish_device_id(self) -> str:
+        """ID on dinh cua may dung de nhan dien chu so huu link publish.
+
+        Cung thuat toan voi AIService._device_id (node + user + mac hash) de
+        moi may co 1 id on dinh, khong doi giua cac lan mo app.
+        """
+        try:
+            cached = getattr(self, "_publish_device_id_cache", "")
+            if cached:
+                return str(cached)
+        except Exception:
+            pass
+        try:
+            import getpass as _getpass
+            import platform as _platform
+
+            try:
+                node = str(_platform.node() or "").strip()
+            except Exception:
+                node = ""
+            try:
+                user = str(_getpass.getuser() or "").strip()
+            except Exception:
+                user = ""
+            try:
+                mac = str(uuid.getnode() or "").strip()
+            except Exception:
+                mac = ""
+            raw = (node + "|" + user + "|" + mac).encode("utf-8", errors="ignore")
+            did = "dev_" + hashlib.sha256(raw).hexdigest()[:32]
+        except Exception:
+            did = ""
+        if not did:
+            try:
+                did = "dev_" + uuid.uuid4().hex[:32]
+            except Exception:
+                did = "dev_unknown"
+        try:
+            self._publish_device_id_cache = did
+        except Exception:
+            pass
+        return did
+
+    def _get_publish_device_name(self) -> str:
+        """Ten than thien cua may (user dat trong Settings) de hien kem owner."""
+        try:
+            from eduplay.core.settings_manager import SettingsManager
+
+            label = str(SettingsManager().get_device_name() or "").strip()
+            if label:
+                return label[:60]
+        except Exception:
+            pass
+        try:
+            import platform as _platform
+
+            node = str(_platform.node() or "").strip()
+            if node:
+                return node[:60]
+        except Exception:
+            pass
+        return ""
+
+    def _fetch_published_game_meta(
+        self,
+        key: str,
+        database_url: str,
+        service_account_b64: str = "",
+        service_account_info: Optional[Dict] = None,
+    ) -> Optional[Dict]:
+        """Doc meta /games/{key} dang co tren Firebase (neu co). Khong bao gio nem."""
+        slug = str(key or "").strip()
+        base = str(database_url or "").rstrip("/")
+        if not slug or not base:
+            return None
+        try:
+            import firebase_admin
+            from firebase_admin import credentials, db
+
+            if service_account_b64 and isinstance(service_account_info, dict) and service_account_info:
+                try:
+                    cred = credentials.Certificate(service_account_info)
+                    _firebase_ensure_app(cred, {"databaseURL": base})
+                except Exception:
+                    pass
+                try:
+                    if firebase_admin._apps:
+                        data = db.reference(f"/games/{slug}").get()
+                        if isinstance(data, dict) and data:
+                            return data
+                        return None
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            import requests
+
+            response = requests.get(base + f"/games/{slug}.json")
+            if 200 <= int(getattr(response, "status_code", 500)) < 300:
+                body = str(getattr(response, "text", "") or "").strip()
+                if body and body != "null":
+                    payload = json.loads(body)
+                    if isinstance(payload, dict) and payload:
+                        return payload
+        except Exception:
+            pass
+        return None
+
+    def _resolve_publish_key(
+        self,
+        project_name: str,
+        project_id: str = "",
+        device_id: str = "",
+        database_url: str = "",
+        service_account_b64: str = "",
+        service_account_info: Optional[Dict] = None,
+        allow_overwrite: bool = False,
+    ) -> str:
+        """Chon key Firebase cho lan publish nay de khong ghi de len may khac.
+
+        Tra ve (key, info) voi info = {"reused": bool, "conflict": bool,
+        "base_slug": str}:
+        - reused=True: ghi de len entry cu cua chinh may nay (giữ link cũ).
+        - conflict=True: ten dep da thuoc may khac nen da tao key rieng.
+
+        - allow_overwrite=True: giu hanh vi cu (ghi de truc tiep) - chi dung
+          khi seed template dung chung cua EduPlay (scripts/publish_templates).
+        - Nguoc lai:
+          + legacy_key = slug(project_id) giu link cu cho project da tung
+            publish tu may nay (kể cả entry cu chua co owner vi uuid trong
+            project_id chung minh quyen so huu).
+          + Neu chua tung publish: dung slug(ten) sach-dep; neu slug(ten) da
+            co nguoi khac (may khac) giu -> tao key moi "slug-xxxxxx" (suffix
+            on dinh theo may+project nen cung may publish lai van ra 1 link),
+            tuyet doi khong ghi de len du an cua may khac.
+        """
+        name = str(project_name or "").strip() or "EduPlay Game"
+        pid = str(project_id or "").strip()
+        dev = str(device_id or "").strip() or self._get_publish_device_id()
+        name_slug = self._slugify_publish_key(name)
+        legacy_key = self._slugify_publish_key(pid or name)
+        if allow_overwrite:
+            return legacy_key or name_slug or "game", {"reused": False, "conflict": False, "base_slug": name_slug}
+
+        def _owned_by_me(existing) -> bool:
+            try:
+                if not isinstance(existing, dict) or not existing:
+                    return False
+                owner = str(existing.get("owner_device_id") or "").strip()
+                return bool(owner and dev and owner == dev)
+            except Exception:
+                return False
+
+        # 1) Giu link cu: project nay da tung publish tu may nay truoc day.
+        if legacy_key and legacy_key != name_slug:
+            try:
+                existing = self._fetch_published_game_meta(
+                    legacy_key, database_url, service_account_b64, service_account_info
+                )
+            except Exception:
+                existing = None
+            if isinstance(existing, dict) and existing:
+                if _owned_by_me(existing):
+                    return legacy_key, {"reused": True, "conflict": False, "base_slug": name_slug}
+                # Entry cu (truoc khi co owner_*): uuid trong project_id la
+                # bang chung duy nhat - key duoc suy ra dung tu project_id
+                # cua may nay nen duoc phep ghi de + gan owner.
+                try:
+                    has_owner = bool(
+                        str(existing.get("owner_device_id") or "").strip()
+                        or str(existing.get("owner_project_id") or "").strip()
+                    )
+                except Exception:
+                    has_owner = True
+                if not has_owner and pid:
+                    return legacy_key, {"reused": True, "conflict": False, "base_slug": name_slug}
+                # Key cu thuoc may khac -> khong dung vao, roi xuong buoc 2.
+            else:
+                # Chua tung publish key cu -> dung protocol ten sach o buoc 2.
+                pass
+        elif legacy_key and legacy_key == name_slug:
+            # project_id rong hoac slug trung ten: xu ly chung o buoc 2.
+            pass
+
+        # 2) Protocol theo ten hien thi.
+        try:
+            existing = self._fetch_published_game_meta(
+                name_slug, database_url, service_account_b64, service_account_info
+            )
+        except Exception:
+            existing = None
+        if not isinstance(existing, dict) or not existing:
+            return name_slug or legacy_key or "game", {"reused": False, "conflict": False, "base_slug": name_slug}
+        if _owned_by_me(existing):
+            return name_slug, {"reused": True, "conflict": False, "base_slug": name_slug}
+        # Entry tai name_slug khong co owner (publish tu ban cu) ma cung
+        # khong xac minh duoc may nao tao -> an toan nhat la tao key moi,
+        # tuyet doi khong ghi de len du an cua may khac.
+        try:
+            seed = f"{dev}|{pid}|{name_slug}".encode("utf-8", errors="ignore")
+            suffix = hashlib.sha256(seed).hexdigest()[:6]
+        except Exception:
+            suffix = "new"
+        candidate = f"{name_slug}-{suffix}" if name_slug else suffix
+        try:
+            existing_cand = self._fetch_published_game_meta(
+                candidate, database_url, service_account_b64, service_account_info
+            )
+        except Exception:
+            existing_cand = None
+        if not isinstance(existing_cand, dict) or not existing_cand:
+            return candidate, {"reused": False, "conflict": True, "base_slug": name_slug}
+        if _owned_by_me(existing_cand):
+            return candidate, {"reused": True, "conflict": False, "base_slug": name_slug}
+        for counter in range(2, 21):
+            numbered = f"{candidate}-{counter}"
+            try:
+                taken = self._fetch_published_game_meta(
+                    numbered, database_url, service_account_b64, service_account_info
+                )
+            except Exception:
+                taken = None
+            if not isinstance(taken, dict) or not taken:
+                return numbered, {"reused": False, "conflict": True, "base_slug": name_slug}
+            if _owned_by_me(taken):
+                return numbered, {"reused": True, "conflict": False, "base_slug": name_slug}
+        try:
+            return f"{candidate}-{uuid.uuid4().hex[:6]}", {"reused": False, "conflict": True, "base_slug": name_slug}
+        except Exception:
+            return candidate, {"reused": False, "conflict": True, "base_slug": name_slug}
+
     def _chunk_string_payload(self, text: str, chunk_size: int = 200000) -> List[str]:
         payload = str(text or "")
         if chunk_size <= 0:
@@ -807,6 +1177,11 @@ class ExportService:
         if name == "fishing":
             files = list((assets_root / "kenney_platformer-kit" / "PNG" / "Default").glob("*.png"))
             files.extend((assets_root / "kenney_platformer-kit" / "sound").glob("*.mp3"))
+            # The fishing game references audio from assets_bundle/sound (background.mp3,
+            # click.wav, correct.wav, wrong.wav, ...). Include them so the library pack
+            # has the full set of assets + audio the game needs on the server.
+            files.extend((assets_root / "sound").glob("*.mp3"))
+            files.extend((assets_root / "sound").glob("*.wav"))
         elif name == "millionaire":
             files = list((assets_root / "millionaire" / "images").glob("*.*"))
             files.extend((assets_root / "millionaire" / "sounds").rglob("*.mp3"))
@@ -845,8 +1220,7 @@ class ExportService:
             if token:
                 info = service_account_info or self._decode_service_account_info(token)
                 cred = credentials.Certificate(info)
-                if not firebase_admin._apps:
-                    firebase_admin.initialize_app(cred, {"databaseURL": database_url})
+                _firebase_ensure_app(cred, {"databaseURL": database_url})
                 data = db.reference(f"/asset_pack_libraries/{profile_name}").get()
                 if isinstance(data, dict):
                     return data
@@ -942,7 +1316,7 @@ class ExportService:
             return {}
         assets = {}
         for file_path in self._library_profile_files(profile_name):
-            data_uri = self._file_to_base64(str(file_path))
+            data_uri = self._file_to_base64(str(file_path), force_base64=True)
             if not data_uri:
                 continue
             assets[self._stable_asset_token(data_uri)] = data_uri
@@ -985,6 +1359,45 @@ class ExportService:
             "available_keys": sorted(versions),
         }
 
+    def _is_library_pack_usable(self, descriptor) -> bool:
+        """True when a published game may reference the shared pack by key.
+
+        The pinned pack key is a stable constant, NOT a content hash, so it
+        can never be compared to the local content hash directly (that
+        broken comparison silently disabled library-sharing entirely).
+        Instead the seeder stores ``content_hash`` (sha256 of the canonical
+        local asset map) in the pack meta + manifest; a match proves the
+        server pack holds exactly these bytes. Legacy content-keyed packs
+        (key == local hash and present in versions) also pass.
+        """
+        try:
+            data = dict(descriptor or {})
+            pack_key = str(data.get("key") or "").strip()
+            local_key = str(data.get("local_key") or "").strip()
+            if not pack_key:
+                return False
+            manifest = dict(data.get("manifest") or {})
+            versions = dict(manifest.get("versions") or {})
+            remote_confirmed = bool(
+                pack_key in versions
+                or str(manifest.get("key") or "").strip() == pack_key
+                or str(manifest.get("latest_key") or "").strip() == pack_key
+            )
+            if not remote_confirmed:
+                return False
+            if local_key and pack_key == local_key:
+                return True
+            content_hash = str(manifest.get("content_hash") or "").strip()
+            if not content_hash:
+                try:
+                    pack_meta = dict(data.get("pack_meta") or {})
+                    content_hash = str(pack_meta.get("content_hash") or "").strip()
+                except Exception:
+                    content_hash = ""
+            return bool(local_key and content_hash and content_hash == local_key)
+        except Exception:
+            return False
+
     def _extract_asset_pack_from_html(self, html_text: str) -> Dict:
         try:
             import re
@@ -1016,6 +1429,75 @@ class ExportService:
         except Exception:
             return {"html": str(html_text or ""), "assets": {}, "asset_pack_key": ""}
 
+    def _inline_relative_assets(self, html_text: str, html_file_path: str = "") -> str:
+        """Rewrite relative asset references (images + audio, both in markup and in
+        JS string literals / CSS url()) to self-contained base64 data URIs so the
+        published single-file game keeps all of its assets (and sound) on the server.
+
+        Only resolves paths that actually exist on disk; anything else is left
+        untouched so we never corrupt unrelated strings.
+        """
+        try:
+            import re
+
+            text = str(html_text or "")
+            base_dir = Path(html_file_path).parent if html_file_path else self.assets_dir
+
+            def _resolve(rel: str) -> str:
+                rel = str(rel or "").strip()
+                if not rel or rel.startswith(("http://", "https://", "data:", "#", "mailto:", "//")):
+                    return ""
+                candidates = [base_dir / rel, self.assets_dir / rel, self.assets_dir / rel.lstrip("./\\")]
+                for cand in candidates:
+                    try:
+                        p = Path(cand)
+                        if p.exists() and p.is_file():
+                            return self._file_to_base64(str(p), force_base64=True)
+                    except Exception:
+                        continue
+                return ""
+
+            # 1) src= attributes on media/template tags (img, audio, video, source, script, link)
+            def _repl_src(m):
+                full, src = m.group(0), m.group(2)
+                uri = _resolve(src)
+                if uri:
+                    return full.replace(src, uri, 1)
+                return full
+
+            text = re.sub(
+                r"""(?is)(<(?:img|audio|video|source|script|link)\b[^>]*?\ssrc\s*=\s*["'])([^"']+)(["'])""",
+                _repl_src,
+                text,
+            )
+
+            # 2) CSS url(...)
+            def _repl_url(m):
+                q, src = m.group(1), m.group(2)
+                uri = _resolve(src)
+                if uri:
+                    return f"url({q}{uri}{q})"
+                return m.group(0)
+
+            text = re.sub(r"""(?is)url\(\s*(["']?)([^)"'\s]+)\1\s*\)""", _repl_url, text)
+
+            # 3) JS string literals pointing at relative asset paths (e.g. '../sound/x.mp3')
+            def _repl_js(m):
+                q, src = m.group(1), m.group(2)
+                uri = _resolve(src)
+                if uri:
+                    return f"{q}{uri}{q}"
+                return m.group(0)
+
+            text = re.sub(
+                r"""(['"])((?:[.][.]/|[.]/)[^'"()\s]+\.(?:mp3|wav|ogg|m4a|png|jpe?g|gif|svg|webp|json|js|css))(['"])""",
+                _repl_js,
+                text,
+            )
+            return text
+        except Exception:
+            return str(html_text or "")
+
     def _encode_asset_pack(self, assets_map: Dict, asset_pack_key: str) -> Dict:
         try:
             import gzip
@@ -1038,7 +1520,7 @@ class ExportService:
                 "chunks": [""],
             }
 
-    def publish_to_firebase(self, html_file_path: str, project_name: str, database_url: str, project_id: str = "", progress_callback=None, project_data: Optional[Dict] = None) -> Dict:
+    def publish_to_firebase(self, html_file_path: str, project_name: str, database_url: str, project_id: str = "", progress_callback=None, project_data: Optional[Dict] = None, device_id: str = "", allow_overwrite: bool = False) -> Dict:
         """Upload lightweight HTML + shared asset pack references to Firebase Realtime Database."""
         result = {"ok": False, "db_link": "", "play_link": "", "key": "", "file_url": "", "error": ""}
         try:
@@ -1049,6 +1531,12 @@ class ExportService:
             if not fp.exists():
                 return result
             raw = fp.read_text(encoding='utf-8', errors='ignore')
+            # Inline relative asset references (images + audio) so the published
+            # single-file game is fully self-contained on the server (sound included).
+            try:
+                raw = self._inline_relative_assets(raw, str(fp))
+            except Exception:
+                pass
             service_account_b64 = self._read_service_account_b64()
             service_account_info = self._decode_service_account_info(service_account_b64)
             self._emit_publish_progress(progress_callback, {
@@ -1076,24 +1564,10 @@ class ExportService:
                     if library_assets.get(token) == data_uri
                 }
                 library_pack_key = str((library_pack or {}).get("key") or "")
-                library_local_key = str((library_pack or {}).get("local_key") or "")
-                library_manifest = dict((library_pack or {}).get("manifest") or {})
-                library_versions = dict((library_manifest or {}).get("versions") or {})
-                manifest_key = str((library_manifest or {}).get("key") or "").strip()
-                manifest_latest_key = str((library_manifest or {}).get("latest_key") or "").strip()
-                remote_library_confirmed = bool(
-                    library_pack_key
-                    and (
-                        library_pack_key in library_versions
-                        or manifest_key == library_pack_key
-                        or manifest_latest_key == library_pack_key
-                    )
-                )
                 if (
                     library_pack_key
                     and matched_assets
-                    and remote_library_confirmed
-                    and (not library_local_key or library_pack_key == library_local_key)
+                    and self._is_library_pack_usable(library_pack)
                 ):
                     stripped_html = raw
                     for token, data_uri in matched_assets.items():
@@ -1116,13 +1590,38 @@ class ExportService:
                 asset_payload = self._encode_asset_pack(assets_map, asset_pack_key)
             ts = int(time.time())
             name = project_name or "EduPlay Game"
-            slug_source = project_id or name
-            base_key = self._slugify_publish_key(slug_source)
-            key = base_key
+            try:
+                publish_device_id = str(device_id or "").strip() or self._get_publish_device_id()
+            except Exception:
+                publish_device_id = str(device_id or "").strip()
+            try:
+                resolved = self._resolve_publish_key(
+                    name,
+                    project_id=project_id,
+                    device_id=publish_device_id,
+                    database_url=database_url,
+                    service_account_b64=service_account_b64,
+                    service_account_info=service_account_info,
+                    allow_overwrite=bool(allow_overwrite),
+                )
+                if isinstance(resolved, (tuple, list)) and len(resolved) == 2:
+                    key, key_info = str(resolved[0] or "").strip(), dict(resolved[1] or {})
+                else:
+                    key, key_info = str(resolved or "").strip(), {}
+            except Exception:
+                slug_source = project_id or name
+                key = self._slugify_publish_key(slug_source)
+                key_info = {}
+            if not str(key or "").strip():
+                slug_source = project_id or name
+                key = self._slugify_publish_key(slug_source)
             chunk_size = 200000
             content_chunks = list(content_payload.get("chunks") or [""])
             meta = {
                 "name": name,
+                "owner_device_id": publish_device_id,
+                "owner_device_name": self._get_publish_device_name(),
+                "owner_project_id": str(project_id or "").strip(),
                 "encoding": str(content_payload.get("encoding") or "base64"),
                 "created_at": ts,
                 "expires_at": ts + 15*24*60*60,
@@ -1177,10 +1676,7 @@ class ExportService:
                         os.environ['EDUPLAY_FIREBASE_SERVICE_ACCOUNT_B64'] = service_account_b64
                     except Exception:
                         pass
-                    if not firebase_admin._apps:
-                        firebase_admin.initialize_app(cred, {
-                            'databaseURL': database_url,
-                        })
+                    _firebase_ensure_app(cred, {'databaseURL': database_url})
                     games_ref = db.reference(f"/games/{key}")
                     uploaded_units = 0
                     upload_total = len(content_chunks) + (len(asset_chunks) if asset_chunks else 0)
@@ -1229,10 +1725,13 @@ class ExportService:
                     })
                     result["ok"] = True
                     result["db_link"] = database_url.rstrip('/') + f"/games/{key}.json"
-                    result["play_link"] = f"https://eduplay-game.web.app/{key}"
+                    result["play_link"] = f"{self.PLAY_BASE_URL}/{key}"
                     result["key"] = key
                     result["file_url"] = ""
                     result["error"] = ""
+                    result["key_reused"] = bool((key_info or {}).get("reused"))
+                    result["name_conflict"] = bool((key_info or {}).get("conflict"))
+                    result["base_slug"] = str((key_info or {}).get("base_slug") or "")
                     self._emit_publish_progress(progress_callback, {
                         "stage": "completed",
                         "play_link": result["play_link"],
@@ -1244,9 +1743,20 @@ class ExportService:
             except Exception as e_admin:
                 print(f"[FIREBASE] Admin SDK failed: {e_admin}")
                 try:
-                    result["error"] = f"Admin SDK error: {e_admin}"
+                    _admin_msg = str(e_admin)
+                    if "invalid_grant" in _admin_msg.lower():
+                        _admin_msg = (
+                            "Lỗi xác thực Firebase (invalid_grant): đồng hồ hệ thống máy tính có thể "
+                            "bị lệch so với thời gian thực. Hãy đồng bộ lại ngày/giờ Windows "
+                            "(Cài đặt -> Thời gian & ngôn ngữ -> Đồng bộ ngay) rồi thử lại. "
+                            "Nếu vẫn lỗi, hãy kiểm tra tệp service account Firebase."
+                        )
+                    result["error"] = f"Admin SDK error: {_admin_msg}"
                 except Exception:
-                    pass
+                    try:
+                        result["error"] = f"Admin SDK error: {e_admin}"
+                    except Exception:
+                        pass
                 if service_account_b64:
                     return result
 
@@ -1341,9 +1851,12 @@ class ExportService:
                 })
                 result["ok"] = True
                 result["db_link"] = url_meta
-                result["play_link"] = f"https://eduplay-game.web.app/{key}"
+                result["play_link"] = f"{self.PLAY_BASE_URL}/{key}"
                 result["key"] = key
                 result["file_url"] = ""
+                result["key_reused"] = bool((key_info or {}).get("reused"))
+                result["name_conflict"] = bool((key_info or {}).get("conflict"))
+                result["base_slug"] = str((key_info or {}).get("base_slug") or "")
                 self._emit_publish_progress(progress_callback, {
                     "stage": "completed",
                     "play_link": result["play_link"],
@@ -1365,6 +1878,494 @@ class ExportService:
                 pass
             return result
 
+    def _published_games_rest_headers(self) -> Dict:
+        return {"Content-Type": "application/json; charset=utf-8"}
+
+    def _admin_db_reference(self, path: str, database_url: str = ""):
+        """Tra ve admin db.reference(path), hoac None neu khong co service
+        account / khong dung duoc Admin SDK (se fallback sang REST)."""
+        try:
+            import firebase_admin  # noqa: F401
+            from firebase_admin import credentials, db
+
+            b64 = self._read_service_account_b64()
+            if not b64:
+                return None
+            info = self._decode_service_account_info(b64)
+            if not isinstance(info, dict) or not info:
+                return None
+            base = str(database_url or "").strip().rstrip("/") or self.DATABASE_URL
+            try:
+                cred = credentials.Certificate(info)
+            except Exception:
+                return None
+            if not _firebase_ensure_app(cred, {"databaseURL": base}):
+                return None
+            return db.reference(str(path or ""))
+        except Exception:
+            return None
+
+    def list_published_games(self, database_url: str = "", device_id: str = "", only_mine: bool = True) -> Dict:
+        """Liet ke cac game tren /games (REST). only_mine=True chi lay entry cua may nay.
+
+        Tra ve {"ok": bool, "items": [ {key, name, play_link, created_at, expires_at,
+        owner_device_name, owner_project_id, days_left, expired} ], "error": str}.
+        """
+        out: Dict = {"ok": False, "items": [], "error": ""}
+        try:
+            import time as _time
+
+            base = str(database_url or "").strip().rstrip("/") or self.DATABASE_URL
+            try:
+                dev = str(device_id or "").strip() or self._get_publish_device_id()
+            except Exception:
+                dev = str(device_id or "").strip()
+            data = None
+            ref = None
+            # Uu tien Admin SDK (DB bat xac thuc, REST tran tra 401)
+            try:
+                ref = self._admin_db_reference("/games", base)
+                if ref is not None:
+                    try:
+                        data = ref.get() or {}
+                    except Exception:
+                        data = None
+            except Exception:
+                ref, data = None, None
+            if data is None:
+                ref = None
+                try:
+                    import requests
+
+                    resp = requests.get(base + "/games.json")
+                    if not (200 <= int(getattr(resp, "status_code", 500)) < 300):
+                        try:
+                            code = int(getattr(resp, "status_code", 0) or 0)
+                        except Exception:
+                            code = 0
+                        if code in (401, 403):
+                            out["error"] = (
+                                "Database yêu cầu xác thực (401/403). "
+                                "Hãy cấu hình Firebase service account trong Cài đặt rồi thử lại."
+                            )
+                        else:
+                            out["error"] = f"GET /games.json -> {getattr(resp, 'status_code', '?')}"
+                        return out
+                    body = str(getattr(resp, "text", "") or "").strip()
+                    data = {}
+                    if body and body != "null":
+                        try:
+                            data = json.loads(body) or {}
+                        except Exception:
+                            data = {}
+                except Exception as e:
+                    if out.get("error"):
+                        return out
+                    out["error"] = f"REST error: {e}"
+                    return out
+            if data is None:
+                data = {}
+            now = int(_time.time())
+            items = []
+            try:
+                entries = list((data.items() if isinstance(data, dict) else []))
+            except Exception:
+                entries = []
+            for key, game in entries:
+                try:
+                    if not isinstance(game, dict):
+                        continue
+                    if only_mine and dev:
+                        owner = str(game.get("owner_device_id") or "").strip()
+                        if owner and owner != dev:
+                            continue
+                    created = int(game.get("created_at") or 0)
+                except Exception:
+                    continue
+                try:
+                    expires = int(game.get("expires_at") or 0)
+                except Exception:
+                    expires = 0
+                if not expires and created:
+                    expires = created + self.PUBLISH_TTL_DAYS * 24 * 60 * 60
+                days_left = None
+                expired = False
+                if expires:
+                    expired = expires <= now
+                    days_left = max(0, int((expires - now) // 86400))
+                items.append(
+                    {
+                        "key": str(key),
+                        "name": str(game.get("name") or key),
+                        "play_link": f"{self.PLAY_BASE_URL}/{key}",
+                        "created_at": created,
+                        "expires_at": expires,
+                        "days_left": days_left,
+                        "expired": expired,
+                        "owner_device_name": str(game.get("owner_device_name") or ""),
+                        "owner_project_id": str(game.get("owner_project_id") or ""),
+                    }
+                )
+            items.sort(key=lambda it: int(it.get("created_at") or 0), reverse=True)
+            out["ok"] = True
+            out["items"] = items
+        except Exception as e:
+            try:
+                out["error"] = str(e)
+            except Exception:
+                pass
+        return out
+
+    def renew_published_game(self, key: str, database_url: str = "", days: int = 0) -> Dict:
+        """Gia han link: dat lai expires_at = now + (days hoac PUBLISH_TTL_DAYS)."""
+        out: Dict = {"ok": False, "expires_at": 0, "error": ""}
+        slug = str(key or "").strip()
+        if not slug:
+            out["error"] = "Missing key"
+            return out
+        try:
+            import time as _time
+
+            base = str(database_url or "").strip().rstrip("/") or self.DATABASE_URL
+            ttl = int(days or 0)
+            if ttl <= 0:
+                ttl = self.PUBLISH_TTL_DAYS
+            new_exp = int(_time.time()) + ttl * 24 * 60 * 60
+            # Uu tien Admin SDK (DB bat xac thuc)
+            try:
+                ref = self._admin_db_reference(f"/games/{slug}/expires_at", base)
+                if ref is not None:
+                    ref.set(new_exp)
+                    out["ok"] = True
+                    out["expires_at"] = new_exp
+                    return out
+            except Exception:
+                pass
+            try:
+                import requests
+
+                body = json.dumps(new_exp).encode("utf-8")
+                resp = requests.put(
+                    base + f"/games/{slug}/expires_at.json",
+                    data=body,
+                    headers=self._published_games_rest_headers(),
+                )
+                if not (200 <= int(getattr(resp, "status_code", 500)) < 300):
+                    try:
+                        code = int(getattr(resp, "status_code", 0) or 0)
+                    except Exception:
+                        code = 0
+                    if code in (401, 403):
+                        out["error"] = (
+                            "Database yêu cầu xác thực (401/403). "
+                            "Hãy cấu hình Firebase service account trong Cài đặt rồi thử lại."
+                        )
+                    else:
+                        out["error"] = f"REST {getattr(resp, 'status_code', '?')}"
+                    return out
+            except Exception as e:
+                out["error"] = f"REST error: {e}"
+                return out
+            out["ok"] = True
+            out["expires_at"] = new_exp
+        except Exception as e:
+            try:
+                out["error"] = str(e)
+            except Exception:
+                pass
+        return out
+
+    def delete_published_game(self, key: str, database_url: str = "") -> Dict:
+        """Xoa 1 game khoi /games (khong xoa asset pack dung chung)."""
+        out: Dict = {"ok": False, "error": ""}
+        slug = str(key or "").strip()
+        if not slug:
+            out["error"] = "Missing key"
+            return out
+        try:
+            base = str(database_url or "").strip().rstrip("/") or self.DATABASE_URL
+            # Uu tien Admin SDK (DB bat xac thuc)
+            try:
+                ref = self._admin_db_reference(f"/games/{slug}", base)
+                if ref is not None:
+                    ref.delete()
+                    out["ok"] = True
+                    return out
+            except Exception:
+                pass
+            try:
+                import requests
+
+                resp = requests.delete(base + f"/games/{slug}.json")
+                if not (200 <= int(getattr(resp, "status_code", 500)) < 300):
+                    try:
+                        code = int(getattr(resp, "status_code", 0) or 0)
+                    except Exception:
+                        code = 0
+                    if code in (401, 403):
+                        out["error"] = (
+                            "Database yêu cầu xác thực (401/403). "
+                            "Hãy cấu hình Firebase service account trong Cài đặt rồi thử lại."
+                        )
+                    else:
+                        out["error"] = f"REST {getattr(resp, 'status_code', '?')}"
+                    return out
+            except Exception as e:
+                out["error"] = f"REST error: {e}"
+                return out
+            out["ok"] = True
+        except Exception as e:
+            try:
+                out["error"] = str(e)
+            except Exception:
+                pass
+        return out
+
+    def auto_renew_soon_expiring(
+        self,
+        database_url: str = "",
+        device_id: str = "",
+        threshold_days: int = 3,
+        limit: int = 20,
+    ) -> Dict:
+        """Tu gia han cac link cua may nay sap het han (con < threshold_days).
+
+        Bao gom ca link vua het han nhung van con tren server. Tra ve
+        {"ok": bool, "checked": n, "renewed": [{"key","name","expires_at"}],
+        "error": str}. Khong bao gio nem.
+        """
+        out: Dict = {"ok": False, "checked": 0, "renewed": [], "error": ""}
+        try:
+            import time as _time
+
+            try:
+                thresh = int(threshold_days)
+            except Exception:
+                thresh = 3
+            if thresh < 0:
+                thresh = 0
+            try:
+                cap = max(1, int(limit))
+            except Exception:
+                cap = 20
+            listed = self.list_published_games(database_url, device_id=device_id, only_mine=True)
+            if not isinstance(listed, dict) or not listed.get("ok"):
+                out["error"] = str((listed or {}).get("error") or "list failed")
+                return out
+            items = list((listed or {}).get("items") or [])
+            out["checked"] = len(items)
+            now = int(_time.time())
+            window = thresh * 24 * 60 * 60
+            base = str(database_url or "").strip().rstrip("/") or self.DATABASE_URL
+            for item in items:
+                try:
+                    if len(out["renewed"]) >= cap:
+                        break
+                    if not isinstance(item, dict):
+                        continue
+                    expires = int(item.get("expires_at") or 0)
+                    if not expires:
+                        continue
+                    if expires - now >= window:
+                        continue
+                    key = str(item.get("key") or "").strip()
+                    if not key:
+                        continue
+                    res = self.renew_published_game(key, base)
+                    if isinstance(res, dict) and res.get("ok"):
+                        out["renewed"].append(
+                            {
+                                "key": key,
+                                "name": str(item.get("name") or key),
+                                "expires_at": int(res.get("expires_at") or 0),
+                            }
+                        )
+                except Exception:
+                    continue
+            out["ok"] = True
+        except Exception as e:
+            try:
+                out["error"] = str(e)
+            except Exception:
+                pass
+        return out
+
+    def publish_library_asset_pack(self, profile: str, database_url: str, progress_callback=None) -> Dict:
+        """Upload a library asset pack (images + audio) to /asset_packs/{pinned_key} and write its manifest.
+
+        Used to (re)seed the shared, never-deleted packs so published templates reference the correct keys.
+        """
+        result = {"ok": False, "key": "", "error": ""}
+        try:
+            import time, firebase_admin
+            from firebase_admin import credentials, db
+
+            profile = str(profile or "").strip().lower()
+            if profile not in self.LIBRARY_ASSET_PACK_KEYS:
+                result["error"] = f"Unknown library profile: {profile}"
+                return result
+
+            service_account_b64 = self._read_service_account_b64()
+            if not service_account_b64:
+                result["error"] = ("Thiếu tài khoản Firebase service account. Vui lòng cấu hình trong Cài đặt "
+                                   "(Settings) của EduPlay Studio trước khi đăng tải.")
+                return result
+            service_account_info = self._decode_service_account_info(service_account_b64)
+            if not isinstance(service_account_info, dict) or not service_account_info.get("project_id"):
+                result["error"] = "Service account Firebase không hợp lệ."
+                return result
+
+            key = self.LIBRARY_ASSET_PACK_KEYS[profile]
+            descriptor = self._resolve_library_asset_pack_descriptor(
+                profile, database_url=database_url,
+                service_account_b64=service_account_b64, service_account_info=service_account_info,
+            ) or {}
+            assets = dict(descriptor.get("assets") or {})
+            asset_count = len(assets)
+            if asset_count == 0:
+                result["error"] = f"Không tìm thấy asset nào cho library profile '{profile}'."
+                return result
+
+            # Upload-once: if the server pack already holds exactly these
+            # bytes (same content hash under the pinned key), skip the
+            # upload entirely instead of rewriting megabytes every run.
+            try:
+                _local_hash = str(descriptor.get("local_key") or "").strip()
+            except Exception:
+                _local_hash = ""
+            try:
+                _server_manifest = dict(descriptor.get("manifest") or {})
+                _server_hash = str(_server_manifest.get("content_hash") or "").strip()
+                _server_key = str(_server_manifest.get("key") or "").strip()
+                _server_latest = str(_server_manifest.get("latest_key") or "").strip()
+            except Exception:
+                _server_hash, _server_key, _server_latest = "", "", ""
+            if (_local_hash and _server_hash and _local_hash == _server_hash
+                    and _server_key == key and _server_latest == key):
+                result["ok"] = True
+                result["key"] = key
+                result["skipped"] = True
+                if progress_callback:
+                    try:
+                        progress_callback(1.0, f"Pack '{profile}' đã có trên server (không đổi) - bỏ qua.")
+                    except Exception:
+                        pass
+                return result
+            result["skipped"] = False
+
+            ts = int(time.time())
+            payload = self._encode_asset_pack(assets, key)
+            chunks = list(payload.get("chunks") or [""])
+            try:
+                content_hash = str(descriptor.get("local_key") or "").strip()
+            except Exception:
+                content_hash = ""
+            meta = {
+                "type": "asset_pack",
+                "encoding": str(payload.get("encoding") or "base64"),
+                "created_at": ts,
+                "updated_at": ts,
+                "chunk_size": 200000,
+                "total_chunks": len(chunks),
+                "asset_count": asset_count,
+                "hash": key,
+                "content_hash": content_hash,
+                "size_bytes": int(payload.get("size_bytes") or 0),
+                "library": True,
+                "never_delete": True,
+                "pinned": True,
+            }
+
+            if progress_callback:
+                try:
+                    progress_callback(0.05, f"Khởi tạo Firebase cho '{profile}'...")
+                except Exception:
+                    pass
+
+            cred = credentials.Certificate(service_account_info)
+            _firebase_ensure_app(cred, {"databaseURL": database_url})
+
+            asset_ref = db.reference(f"/asset_packs/{key}")
+            existing = asset_ref.get()
+            if not existing:
+                asset_ref.set(meta)
+                for i, c in enumerate(chunks):
+                    asset_ref.child("chunks").child(str(i)).set(c)
+                    if progress_callback:
+                        try:
+                            progress_callback(0.05 + 0.9 * (i + 1) / max(1, len(chunks)),
+                                             f"Đăng tải asset pack '{profile}' ({i+1}/{len(chunks)})...")
+                        except Exception:
+                            pass
+            else:
+                # refresh chunks in case the pack changed
+                asset_ref.child("updated_at").set(ts)
+                asset_ref.child("chunks").set({str(i): c for i, c in enumerate(chunks)})
+                asset_ref.child("total_chunks").set(len(chunks))
+                asset_ref.child("asset_count").set(asset_count)
+                asset_ref.child("size_bytes").set(int(payload.get("size_bytes") or 0))
+                try:
+                    if content_hash:
+                        asset_ref.child("content_hash").set(content_hash)
+                except Exception:
+                    pass
+
+            manifest_ref = db.reference(f"/asset_pack_libraries/{profile}")
+            manifest = {
+                "key": key,
+                "latest_key": key,
+                "profile": profile,
+                "asset_count": asset_count,
+                "total_chunks": len(chunks),
+                "encoding": meta["encoding"],
+                "hash": key,
+                "content_hash": content_hash,
+                "updated_at": ts,
+                "library": True,
+                "never_delete": True,
+                "pinned": True,
+            }
+            manifest_ref.set(self._normalize_library_manifest(profile, manifest))
+
+            result["ok"] = True
+            result["key"] = key
+            if progress_callback:
+                try:
+                    progress_callback(1.0, f"Hoàn tất asset pack '{profile}' ({asset_count} assets).")
+                except Exception:
+                    pass
+        except Exception as e:
+            result["error"] = str(e)
+        return result
+
+    def _orphaned_derived_pack_keys(self, games, pack_flags) -> list:
+        """Pack keys safe to delete: derived (non-library) packs that no
+        remaining game references. Pure function so it stays unit-testable.
+        """
+        try:
+            referenced = set()
+            for game in (games or {}).values():
+                try:
+                    key = str((game or {}).get("asset_pack_key") or "").strip()
+                except Exception:
+                    key = ""
+                if key:
+                    referenced.add(key)
+            orphaned = []
+            for pack_key, flags in (pack_flags or {}).items():
+                try:
+                    info = dict(flags or {})
+                    if info.get("library") or info.get("never_delete"):
+                        continue
+                    if str(pack_key or "").strip() in referenced:
+                        continue
+                    orphaned.append(str(pack_key))
+                except Exception:
+                    continue
+            return sorted(orphaned)
+        except Exception:
+            return []
+
     def cleanup_firebase_old(self, database_url: str, days: int = 30, max_items: Optional[int] = None) -> Dict:
         """Delete games older than `days` and enforce max_items (delete oldest) from Firebase Realtime Database."""
         info = {"deleted": [], "checked": 0, "error": ""}
@@ -1381,8 +2382,7 @@ class ExportService:
                     service_account_info = self._decode_service_account_info(b64)
                     cred = credentials.Certificate(service_account_info)
                     storage_bucket = self._firebase_storage_bucket(service_account=service_account_info)
-                    if not firebase_admin._apps:
-                        firebase_admin.initialize_app(cred, {'databaseURL': database_url, 'storageBucket': storage_bucket})
+                    _firebase_ensure_app(cred, {'databaseURL': database_url, 'storageBucket': storage_bucket})
                     ref = db.reference("/games")
                     def _delete_storage_payload(item):
                         try:
@@ -1434,6 +2434,27 @@ class ExportService:
                                     pass
                         except Exception:
                             pass
+                    # GC: drop derived (non-library) asset packs that no
+                    # remaining game references anymore.
+                    try:
+                        remaining_games = db.reference("/games").get() or {}
+                        pack_keys = db.reference("/asset_packs").get(shallow=True) or {}
+                        flags = {}
+                        for pack_key in list(pack_keys if isinstance(pack_keys, dict) else []):
+                            try:
+                                is_lib = db.reference(f"/asset_packs/{pack_key}/library").get()
+                                is_keep = db.reference(f"/asset_packs/{pack_key}/never_delete").get()
+                                flags[pack_key] = {"library": bool(is_lib), "never_delete": bool(is_keep)}
+                            except Exception:
+                                continue
+                        for pack_key in self._orphaned_derived_pack_keys(remaining_games, flags):
+                            try:
+                                db.reference(f"/asset_packs/{pack_key}").delete()
+                                info.setdefault("deleted_packs", []).append(pack_key)
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
                     return info
             except Exception:
                 pass
@@ -1480,6 +2501,42 @@ class ExportService:
                             pass
                 except Exception:
                     pass
+            # GC (REST): same orphaned-derived-pack sweep as the admin branch.
+            try:
+                base_rest = database_url.rstrip('/')
+                games_all = {}
+                try:
+                    _gr = requests.get(base_rest + "/games.json")
+                    if 200 <= _gr.status_code < 300:
+                        games_all = _gr.json() or {}
+                except Exception:
+                    games_all = {}
+                pack_keys = []
+                try:
+                    _pr = requests.get(base_rest + "/asset_packs.json?shallow=true")
+                    if 200 <= _pr.status_code < 300 and isinstance(_pr.json(), dict):
+                        pack_keys = list(_pr.json().keys())
+                except Exception:
+                    pack_keys = []
+                flags = {}
+                for pack_key in pack_keys:
+                    try:
+                        _lr = requests.get(base_rest + f"/asset_packs/{pack_key}/library.json")
+                        _kr = requests.get(base_rest + f"/asset_packs/{pack_key}/never_delete.json")
+                        is_lib = bool(_lr.json()) if 200 <= _lr.status_code < 300 else False
+                        is_keep = bool(_kr.json()) if 200 <= _kr.status_code < 300 else False
+                        flags[pack_key] = {"library": is_lib, "never_delete": is_keep}
+                    except Exception:
+                        continue
+                for pack_key in self._orphaned_derived_pack_keys(games_all, flags):
+                    try:
+                        _dr = requests.delete(base_rest + f"/asset_packs/{pack_key}.json")
+                        if 200 <= _dr.status_code < 300:
+                            info.setdefault("deleted_packs", []).append(pack_key)
+                    except Exception:
+                        continue
+            except Exception:
+                pass
             return info
         except Exception as e:
             info["error"] = str(e)
@@ -1884,7 +2941,17 @@ pause
         html = self._generate_quiz_game_html(project_data, 'classic')
         return self._inject_favicon(html)
     
-    def _normalize_millionaire_questions_for_runtime(self, questions: List[Dict]) -> List[Dict]:
+    def _normalize_millionaire_questions_for_runtime(self, questions: List[Dict], project_data: Optional[Dict] = None) -> List[Dict]:
+        # Resolve project dir for relative media/ paths (OneDrive-aware)
+        _proj_dir = None
+        try:
+            if isinstance(project_data, dict):
+                pid = str(project_data.get('id') or '').strip()
+                if pid:
+                    from eduplay.core.path_resolver import PathResolver as _PR
+                    _proj_dir = _PR.resolve_projects_dir() / pid
+        except Exception:
+            _proj_dir = None
         normalized: List[Dict] = []
         for raw_question in list(questions or []):
             q = raw_question if isinstance(raw_question, dict) else {}
@@ -1985,10 +3052,47 @@ pause
                 'explanation': q.get('explanation') or q.get('explain') or q.get('detail') or q.get('solution') or '',
             }
             image_base64 = q.get('image_base64') or ''
-            if (not image_base64) and isinstance(q.get('image'), str) and str(q.get('image')).startswith('data:'):
-                image_base64 = str(q.get('image'))
+            if (not image_base64) and isinstance(q.get('image'), str) and str(q.get('image')).strip().lower().startswith('data:'):
+                image_base64 = str(q.get('image')).strip()
+            if (not image_base64):
+                raw_img = str(q.get('image') or '').strip()
+                if raw_img and not raw_img.lower().startswith('data:'):
+                    # Try robust resolve first (handles media/ relative + OneDrive)
+                    try:
+                        from eduplay.core.path_resolver import PathResolver as _PR2
+                        from pathlib import Path as _Pt
+                        # try resolve with project dir
+                        rp = _PR2.resolve_user_file(raw_img, project_dir=_proj_dir)
+                        if rp is not None:
+                            image_base64 = self._file_to_base64(str(rp), force_base64=True)
+                        else:
+                            # also try via _resource_path fallback inside _file_to_base64
+                            image_base64 = self._file_to_base64(raw_img, force_base64=True)
+                            # if still empty but raw is relative media/, try direct project media file
+                            if not image_base64 and _proj_dir is not None and not raw_img.lower().startswith('data:'):
+                                cand = _proj_dir / raw_img
+                                if cand.exists():
+                                    image_base64 = self._file_to_base64(str(cand), force_base64=True)
+                                elif ( _proj_dir / 'media' / _Pt(raw_img).name).exists():
+                                    image_base64 = self._file_to_base64(str(_proj_dir / 'media' / _Pt(raw_img).name), force_base64=True)
+                    except Exception:
+                        try:
+                            image_base64 = self._file_to_base64(raw_img, force_base64=True)
+                        except Exception:
+                            image_base64 = ''
+            if isinstance(image_base64, str) and image_base64.startswith('file://'):
+                raw_img = str(q.get('image') or '').strip()
+                try:
+                    from eduplay.core.path_resolver import PathResolver as _PR3
+                    rp2 = _PR3.resolve_user_file(raw_img, project_dir=_proj_dir)
+                    reconverted = self._file_to_base64(str(rp2) if rp2 is not None else raw_img, force_base64=True) if raw_img else ''
+                except Exception:
+                    reconverted = self._file_to_base64(raw_img, force_base64=True) if raw_img else ''
+                image_base64 = reconverted or ''
             if image_base64:
                 normalized_question['image_base64'] = image_base64
+                # also keep image field for app.js fallback (it checks image || image_base64)
+                normalized_question['image'] = image_base64
             normalized.append(normalized_question)
         return normalized
 
@@ -2286,7 +3390,7 @@ window.$=$;window.jQuery=$;
             except Exception:
                 m_assets = {}
             normalized_questions = self._normalize_millionaire_questions_for_runtime(
-                list(project_data.get('questions', []) or [])
+                list(project_data.get('questions', []) or []), project_data=project_data
             )
             enriched_game_config = self._without_feedback_sound_pools(project_data.get('game_config', {}) or {})
             payload = _json.dumps({
@@ -2321,8 +3425,10 @@ window.$=$;window.jQuery=$;
                 "var tl=parseInt(q.time_limit||q.time||(obj.game_config&&obj.game_config.question_time)||60,10);"
                 "if(!isFinite(tl)||tl<=0){tl=parseInt((obj.game_config&&obj.game_config.question_time)||60,10);}"
                 "var expl=(q.explanation||q.explain||q.detail||q.solution||'');"
+                "var qimg=(q.image_base64||q.image||'');"
+                "if(qimg&&qimg.indexOf('data:')!==0&&qimg.indexOf('file:')===0){qimg='';}"
                 "return {question:(q.question||q.text||''),correct_answer:String(opts[idx]||''),"
-                "incorrect_answers:opts.filter(function(o,i){return i!==idx;}).slice(0,3),time_limit:tl,explanation:expl};}"
+                "incorrect_answers:opts.filter(function(o,i){return i!==idx;}).slice(0,3),time_limit:tl,explanation:expl,image:qimg};}"
                 "window.EDU_QUESTIONS=qs.map(map).slice(0,15);"
                 "var assets=(obj.game_config&&obj.game_config.millionaire_assets)||{};"
                 "window.EDU_MILLIONAIRE_ASSETS=assets;"
@@ -2357,6 +3463,44 @@ window.$=$;window.jQuery=$;
                 html = html.replace('</body>', exit_handler + '</body>')
             else:
                 html = html + exit_handler
+
+            try:
+                _sf_lang = str(project_data.get('language') or 'vi')
+            except Exception:
+                _sf_lang = 'vi'
+            html = self._localize_millionaire_menu(html, _sf_lang)
+
+            # Device recommendation notice on the main menu (shown on load).
+            # Text is baked at export time in the project's language.
+            try:
+                _sf_lang = str(project_data.get('language') or 'vi')
+            except Exception:
+                _sf_lang = 'vi'
+            try:
+                _sf_title = I18n.t('common.device_notice_title', _sf_lang) or 'Thông báo'
+                _sf_body = I18n.t('common.device_notice_body', _sf_lang) or ''
+            except Exception:
+                _sf_title, _sf_body = 'Thông báo', ''
+            if _sf_body:
+                try:
+                    import html as _sf_html_mod
+                    _sf_div = (
+                        '<div id="edu-device-notice" style="max-width:640px;width:92%;margin:10px auto 0 auto;'
+                        'padding:10px 14px;border-radius:12px;text-align:left;font-size:13px;line-height:1.6;'
+                        'white-space:pre-line;color:#FDE68A;background:rgba(2,6,23,0.72);'
+                        'border:1px solid rgba(227,171,40,0.65);box-sizing:border-box;">'
+                        '<strong style="display:block;margin-bottom:4px;font-size:14px;">'
+                        + _sf_html_mod.escape(str(_sf_title), quote=True)
+                        + '</strong>'
+                        + _sf_html_mod.escape(str(_sf_body), quote=True)
+                        + '</div>'
+                    )
+                    if '<section   id="mainMenu">' in html:
+                        html = html.replace(
+                            '<section   id="mainMenu">',
+                            '<section   id="mainMenu">' + _sf_div, 1)
+                except Exception:
+                    pass
 
             output_file.parent.mkdir(parents=True, exist_ok=True)
             output_file.write_text(html, encoding='utf-8')
@@ -2504,10 +3648,16 @@ window.$=$;window.jQuery=$;
                     html = html.replace(a, uri)
                     html = html.replace('./'+a, uri)
             enriched_game_config = self._without_feedback_sound_pools(project_data.get('game_config', {}) or {})
+            # Bundle question images to base64 so packed mode also shows them (same as single_file)
+            try:
+                _bundled = self._bundle_media_files(dict(project_data))
+                _qs = _bundled.get('questions', []) or []
+            except Exception:
+                _qs = list(project_data.get('questions',[]) or [])
             payload = self._safe_json_dumps({
                 'project_name': project_data.get('name','Ai Là Triệu Phú'),
                 'language': project_data.get('language','vi'),
-                'questions': list(project_data.get('questions',[]) or []),
+                'questions': _qs,
                 'game_config': enriched_game_config
             })
             inject_tag = f"<script id=\"game-data\" type=\"application/json\">{payload}</script>"
@@ -2522,7 +3672,8 @@ window.$=$;window.jQuery=$;
                 "else if(typeof ca==='string'){var L=['A','B','C','D'];var up=ca.toUpperCase();var li=L.indexOf(up);idx=li>=0?li:Math.max(0,opts.indexOf(ca));}"
                 "var tl=parseInt(q.time_limit||q.time||(p.game_config&&p.game_config.question_time)||60,10);"
                 "if(!isFinite(tl)||tl<=0){tl=parseInt((p.game_config&&p.game_config.question_time)||60,10);}"
-                "return{question:(q.question||q.text||''),correct_answer:String(opts[idx]||''),incorrect_answers:opts.filter(function(o,i){return i!==idx;}).slice(0,3),time_limit:tl,explanation:(q.explanation||q.explain||q.detail||q.solution||'')};}"
+                "var qimg=(q.image_base64||q.image||''); if(qimg&&qimg.indexOf('data:')!==0&&qimg.indexOf('file:')===0){qimg='';}"
+                "return{question:(q.question||q.text||''),correct_answer:String(opts[idx]||''),incorrect_answers:opts.filter(function(o,i){return i!==idx;}).slice(0,3),time_limit:tl,explanation:(q.explanation||q.explain||q.detail||q.solution||''),image:qimg,image_base64:qimg};}"
                 "window.EDU_PROJECT=p;"
                 "window.EDU_MILLIONAIRE_MODE=String((p.game_config&&p.game_config.export_mode)||'student').toLowerCase()==='teaching'?'teaching':'student';"
                 "window.__EP_MILLIONAIRE_TEACHING=window.EDU_MILLIONAIRE_MODE==='teaching';"
@@ -2908,6 +4059,8 @@ window.$=$;window.jQuery=$;
                     'i18n_start_title': I18n.t('fishing.start_title', lang),
                     'i18n_start_button': I18n.t('fishing.start_button', lang),
                     'i18n_start_rules': I18n.t('fishing.start_rules', lang),
+                    'i18n_device_notice_title': I18n.t('common.device_notice_title', lang) or 'Thông báo',
+                    'i18n_device_notice_body': I18n.t('common.device_notice_body', lang) or '',
                     'i18n_audio_not_supported': I18n.t('fishing.audio_not_supported', lang),
                     'i18n_msg_low': I18n.t('quiz.msg_low', lang) or 'Cố gắng lên nhé!',
                     'i18n_msg_mid': I18n.t('quiz.msg_mid', lang) or 'Gần được rồi!',
@@ -2943,6 +4096,32 @@ window.$=$;window.jQuery=$;
         except Exception as e:
             print(f"Error exporting Fishing single file: {e}")
             return False
+
+    def _localize_millionaire_menu(self, html: str, lang: str) -> str:
+        """Swap hardcoded English menu texts for project-language ones."""
+        try:
+            pairs = [
+                ('<div class="textBlockText" id="playGameBtn">Play Game</div>',
+                 'millionaire.play_game', 'Play Game'),
+                ('<div class="textBlockText" id="showLeaderboardBtn">Leaderboard</div>',
+                 'millionaire.leaderboard', 'Leaderboard'),
+                ('<div class="textBlockText">Main Menu</div>',
+                 'millionaire.main_menu', 'Main Menu'),
+                ('<div class="leaderboardHeaderText">LEADERBOARD</div>',
+                 'millionaire.leaderboard_title', 'LEADERBOARD'),
+            ]
+            for src, key, default_en in pairs:
+                try:
+                    val = I18n.t(key, lang)
+                except Exception:
+                    val = ""
+                if not val or val == key or src not in html:
+                    continue
+                html = html.replace(
+                    src, src.replace(">" + default_en + "<", ">" + val + "<", 1), 1)
+        except Exception:
+            pass
+        return html
 
     def _generate_millionaire_html(self, project_data: Dict) -> str:
         """Render Millionaire using bundled index.html with teacher questions"""
@@ -3026,8 +4205,10 @@ window.$=$;window.jQuery=$;
                         p = base_dir / img
                         if p.exists():
                             uri = to_uri(p)
-                            h = h.replace(img, uri)
+                            # xử lý url("../images/...") trong CSS — phải thay ../ trước để tránh "../data:"
+                            h = h.replace(f'../{img}', uri)
                             h = h.replace(f'./{img}', uri)
+                            h = h.replace(img, uri)
                     return h
                 def _inline_audio(h):
                     from pathlib import Path
@@ -3112,6 +4293,37 @@ window.$ = $; window.jQuery = $;
             else:
                 # Fallback: append at end
                 content = content + "\n" + inject_tag
+            # Device recommendation notice on the main menu (shown on load).
+            # Text is baked at export time in the project's language.
+            try:
+                _ml_lang = str(inline_data.get('language') or 'vi')
+            except Exception:
+                _ml_lang = 'vi'
+            try:
+                _dn_title = I18n.t('common.device_notice_title', _ml_lang) or 'Thông báo'
+                _dn_body = I18n.t('common.device_notice_body', _ml_lang) or ''
+            except Exception:
+                _dn_title, _dn_body = 'Thông báo', ''
+            if _dn_body:
+                try:
+                    import html as _html_mod
+                    _dn_html = (
+                        '<div id="edu-device-notice" style="max-width:640px;width:92%;margin:10px auto 0 auto;'
+                        'padding:10px 14px;border-radius:12px;text-align:left;font-size:13px;line-height:1.6;'
+                        'white-space:pre-line;color:#FDE68A;background:rgba(2,6,23,0.72);'
+                        'border:1px solid rgba(227,171,40,0.65);box-sizing:border-box;">'
+                        '<strong style="display:block;margin-bottom:4px;font-size:14px;">'
+                        + _html_mod.escape(str(_dn_title), quote=True)
+                        + '</strong>'
+                        + _html_mod.escape(str(_dn_body), quote=True)
+                        + '</div>'
+                    )
+                    if '<section   id="mainMenu">' in content:
+                        content = content.replace(
+                            '<section   id="mainMenu">',
+                            '<section   id="mainMenu">' + _dn_html, 1)
+                except Exception:
+                    pass
             bridge_js = (
                 "<script>(function(){"
                 "var el=document.getElementById('game-data');"
@@ -3179,6 +4391,11 @@ window.$ = $; window.jQuery = $;
             except Exception:
                 pass
             content = self._inject_favicon(content)
+            try:
+                _mill_lang = str(project_data.get('language') or 'vi')
+            except Exception:
+                _mill_lang = 'vi'
+            content = self._localize_millionaire_menu(content, _mill_lang)
             return content
         except Exception as e:
             return f"<html><body><h3>Error rendering Millionaire: {e}</h3></body></html>"
@@ -3280,6 +4497,8 @@ window.$ = $; window.jQuery = $;
             'msg_low': I18n.t('quiz.msg_low', lang) or 'Cố gắng lên nhé!',
             'msg_mid': I18n.t('quiz.msg_mid', lang) or 'Gần được rồi!',
             'msg_high': I18n.t('quiz.msg_high', lang) or 'Xuất Sắc!',
+            'device_notice_title': I18n.t('common.device_notice_title', lang) or 'Thông báo',
+            'device_notice_body': I18n.t('common.device_notice_body', lang) or '',
         }
         import json as _json
         labels_json = self._safe_json_dumps(labels)
@@ -3369,7 +4588,7 @@ window.$ = $; window.jQuery = $;
         .spr-opt-grey::after{content:""; position:absolute; inset:0; background:linear-gradient(135deg, rgba(120,120,140,0.55), rgba(60,60,80,0.55));}
         .options-container { display:block; margin-top: 16px; }
         .option-wrap { position: relative; margin: var(--sp-gap) 0; border-radius: 12px; }
-        .option-label { position: absolute; left: 18px; top: 50%; transform: translateY(-50%); color: #FFFFFF; font-weight: 700; text-shadow: 0 1px 2px rgba(0,0,0,0.35); z-index: 2; pointer-events: none; }
+        .option-label { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); width: calc(100% - 24px); text-align: center; color: #FFFFFF; font-weight: 700; text-shadow: 0 1px 2px rgba(0,0,0,0.35); z-index: 2; pointer-events: none; }
         .option-button { position: relative; width: 100%; background: transparent; border: none; cursor: pointer; }
         .option-wrap .option-button { position: absolute; left:0; top:0; width:100%; height:100%; z-index: 3 }
         .option-sprite { pointer-events: none; }
@@ -3403,7 +4622,6 @@ window.$ = $; window.jQuery = $;
             max-width: {{ '1400px' if is_millionaire else '1180px' }};
             width: 100%;
             box-shadow: {{ '0 20px 40px rgba(0, 0, 0, 0.3)' if is_millionaire else '0 30px 80px rgba(15, 23, 42, 0.16), 0 12px 30px rgba(34, 197, 94, 0.08)' }};
-            backdrop-filter: blur(10px);
             border: 1px solid {{ 'transparent' if is_millionaire else 'rgba(255, 255, 255, 0.78)' }};
             aspect-ratio: {{ '16 / 9' if is_millionaire else 'unset' }};
             transform-origin: center;
@@ -3431,7 +4649,7 @@ window.$ = $; window.jQuery = $;
         #game-content::-webkit-scrollbar-track { background: rgba(2, 6, 23, 0.10); border-radius: 999px; }
         #game-content::-webkit-scrollbar-thumb { background: {{ 'rgba(127,86,217,0.90)' if is_millionaire else 'rgba(34,197,94,0.55)' }}; border-radius: 999px; border: 3px solid {{ 'rgba(255,255,255,0.65)' if is_millionaire else 'rgba(255,255,255,0.95)' }}; }
         /* allow native scrollbars */
-        .intro-screen{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:{{ 'rgba(0,0,0,0.75)' if is_millionaire else 'linear-gradient(180deg, rgba(240,249,255,0.92), rgba(236,253,245,0.94))' }};z-index:10}
+        .intro-screen{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;background:{{ 'rgba(0,0,0,0.75)' if is_millionaire else 'linear-gradient(180deg, rgba(240,249,255,0.92), rgba(236,253,245,0.94))' }};z-index:10;overflow-y:auto;padding:16px 12px 72px;-webkit-overflow-scrolling:touch}
         .intro-card{
             background: {{ 'rgba(15,23,42,0.96)' if is_millionaire else 'linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.98))' }};
             border-radius: 20px;
@@ -3439,6 +4657,9 @@ window.$ = $; window.jQuery = $;
             text-align: center;
             max-width: 560px;
             width: min(92vw, 560px);
+            max-height: 94vh;
+            overflow-y: auto;
+            margin: auto;
             color: {{ '#EDEEF3' if is_millionaire else '#0F172A' }};
             box-shadow: {{ '0 20px 40px rgba(0,0,0,0.45)' if is_millionaire else '0 28px 60px rgba(15, 23, 42, 0.14)' }};
             border: 1px solid {{ 'rgba(148,163,184,0.45)' if is_millionaire else 'rgba(148, 163, 184, 0.24)' }};
@@ -3464,6 +4685,19 @@ window.$ = $; window.jQuery = $;
             margin-bottom: 20px;
             color: {{ '#CBD5E1' if is_millionaire else '#475569' }};
         }
+        .device-notice{
+            text-align: left;
+            font-size: 0.85rem;
+            line-height: 1.6;
+            margin: 0 0 18px 0;
+            padding: 12px 14px;
+            border-radius: 12px;
+            white-space: pre-line;
+            background: {{ 'rgba(227,171,40,0.12)' if is_millionaire else '#FFFBEB' }};
+            border: 1px solid {{ 'rgba(227,171,40,0.55)' if is_millionaire else '#FCD34D' }};
+            color: {{ '#FDE68A' if is_millionaire else '#92400E' }};
+        }
+        .device-notice strong{display: block; margin-bottom: 4px; font-size: 0.92rem;}
         .circle-bg{width:420px;height:420px;border-radius:50%;background:radial-gradient(circle, rgba(34,197,94,0.38) 0%, rgba(0,0,0,0.0) 60%);position:absolute;}
         .start-button{background:linear-gradient(135deg, {{ accent }} 0%, #16A34A 100%);color:#fff;border:none;border-radius:14px;padding:14px 26px;font-size:1.05em;font-weight:700;margin-top:4px;box-shadow:0 14px 28px rgba(34,197,94,0.22)}
         .start-button:hover{filter:brightness(1.1)}
@@ -3498,7 +4732,7 @@ window.$ = $; window.jQuery = $;
         .bar{flex:1;background:linear-gradient(180deg, {{ accent }}, #16A34A);border-radius:8px;position:relative}
         .bar span{position:absolute;bottom:6px;left:6px;font-weight:700;color:#fff}
         .countdown{font-weight:700;font-size:1.4em;text-align:center;margin-top:8px;color:{{ '#EDEEF3' if is_millionaire else '#0F172A' }}}
-        .voice-toolbar { position: fixed; top: 18px; right: 18px; display: flex; gap: 8px; align-items: center; background: {{ 'rgba(27,31,42,0.55)' if is_millionaire else 'rgba(255,255,255,0.92)' }}; border: 1px solid {{ '#2A2F3A' if is_millionaire else 'rgba(148, 163, 184, 0.24)' }}; border-radius: 12px; padding: 8px 10px; box-shadow: {{ 'none' if is_millionaire else '0 10px 24px rgba(15, 23, 42, 0.10)' }}; backdrop-filter: blur(12px); }
+        .voice-toolbar { position: fixed; top: 18px; right: 18px; display: flex; gap: 8px; align-items: center; background: {{ 'rgba(27,31,42,0.55)' if is_millionaire else 'rgba(255,255,255,0.92)' }}; border: 1px solid {{ '#2A2F3A' if is_millionaire else 'rgba(148, 163, 184, 0.24)' }}; border-radius: 12px; padding: 8px 10px; box-shadow: {{ 'none' if is_millionaire else '0 10px 24px rgba(15, 23, 42, 0.10)' }}; }
         .voice-toolbar label { color: {{ '#EDEEF3' if is_millionaire else '#334155' }}; font-size: 12px; font-weight: 600; }
         .voice-toolbar select { background: {{ '#1B1F2A' if is_millionaire else '#F8FAFC' }}; color: {{ '#EDEEF3' if is_millionaire else '#0F172A' }}; border: 1px solid {{ '#2A2F3A' if is_millionaire else 'rgba(148, 163, 184, 0.38)' }}; border-radius: 8px; padding: 6px 8px; min-width: 160px; }
         .voice-toolbar input[type="checkbox"] { accent-color: {{ accent }}; }
@@ -3536,7 +4770,6 @@ window.$ = $; window.jQuery = $;
             border: 1px solid {{ 'rgba(148, 163, 184, 0.22)' if is_millionaire else 'rgba(191, 219, 254, 0.64)' }};
             border-radius: 18px;
             color: {{ '#EDEEF3' if is_millionaire else '#111827' }};
-            backdrop-filter: blur(8px);
             box-shadow: {{ 'none' if is_millionaire else 'inset 0 1px 0 rgba(255,255,255,0.75), 0 14px 30px rgba(15, 23, 42, 0.06)' }};
         }
         
@@ -3595,14 +4828,33 @@ window.$ = $; window.jQuery = $;
             word-break: break-word;
         }
         
-        .image-container { position: relative; width: 100%; border-radius: 18px; overflow: hidden; margin-bottom: 0; display:none; border: {{ 'none' if is_millionaire else '1px solid rgba(191, 219, 254, 0.8)' }}; background: {{ 'transparent' if is_millionaire else 'rgba(255,255,255,0.82)' }}; box-shadow: {{ 'none' if is_millionaire else '0 12px 26px rgba(148, 163, 184, 0.14)' }}; }
+        .image-container { position: relative; width: 100%; max-width: 680px; margin: 0 auto 14px auto; border-radius: 16px; overflow: hidden; display:none; border: {{ 'none' if is_millionaire else '2px solid rgba(14, 165, 233, 0.22)' }}; background: {{ 'transparent' if is_millionaire else '#ffffff' }}; box-shadow: {{ 'none' if is_millionaire else '0 16px 36px rgba(15, 23, 42, 0.16), 0 2px 8px rgba(14, 165, 233, 0.10)' }}; padding: {{ '0' if is_millionaire else '10px' }}; animation: qImgIn 0.32s ease-out; }
+        .image-container.has-image { display: block; }
+        .image-container::after { content: "🔍 Nhấn để phóng to"; position: absolute; right: 10px; bottom: 10px; font-size: 11px; font-weight: 700; background: rgba(15, 23, 42, 0.88); color: #BAE6FD; padding: 4px 8px; border-radius: 999px; pointer-events: none; opacity: 0.92; }
         .image-container.loading::before { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(255,255,255,0.06) 25%, rgba(255,255,255,0.15) 50%, rgba(255,255,255,0.06) 75%); animation: shimmer 1.2s infinite; }
+        @keyframes qImgIn { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
         .question-image {
-            max-width: 100%;
-            height: auto;
-            border-radius: 12px;
             display: block;
+            width: 100%;
+            max-height: min(52vh, 420px);
+            min-height: 180px;
+            height: auto;
+            margin: 0 auto;
+            object-fit: contain;
+            border-radius: 12px;
+            padding: 0;
+            box-sizing: border-box;
+            background: #fff;
+            cursor: zoom-in;
+            transition: transform 0.22s ease;
         }
+        .question-image:hover { transform: scale(1.012); }
+        @media (max-width: 640px) { .question-image { max-height: min(42vh, 300px); min-height: 140px; } }
+        /* Lightbox */
+        #eduImageLightbox { display: none; position: fixed; inset: 0; z-index: 9999; background: rgba(2, 6, 23, 0.92); align-items: center; justify-content: center; padding: 24px; cursor: zoom-out; }
+        #eduImageLightbox.open { display: flex; }
+        #eduImageLightbox img { max-width: 96vw; max-height: 92vh; object-fit: contain; border-radius: 12px; box-shadow: 0 20px 60px rgba(0,0,0,0.6); background: #fff; padding: 8px; }
+        #eduImageLightbox .close-hint { position: absolute; top: 14px; right: 16px; color: #BAE6FD; font-size: 13px; font-weight: 700; background: rgba(255,255,255,0.12); padding: 6px 12px; border-radius: 999px; border: 1px solid rgba(186, 230, 253, 0.35); }
         
         .options-container {
             display: grid;
@@ -3673,10 +4925,11 @@ window.$ = $; window.jQuery = $;
         .option-inner {
             display: flex;
             align-items: center;
+            justify-content: center;
             gap: 14px;
             width: 100%;
-            min-height: 72px;
-            padding: 15px 16px;
+            min-height: 84px;
+            padding: 15px 18px;
         }
         .option-prefix {
             width: 38px;
@@ -3701,12 +4954,15 @@ window.$ = $; window.jQuery = $;
             gap: 2px;
             min-width: 0;
             flex: 1;
+            align-items: center;
+            text-align: center;
         }
         .option-copy {
             display: block;
             font-weight: 700;
             color: #0F172A;
             word-break: break-word;
+            text-align: center;
         }
         .option-hint {
             display: block;
@@ -3749,7 +5005,7 @@ window.$ = $; window.jQuery = $;
         .option-button.btn-classic:active { transform: translateY(1px) scale(0.996); box-shadow: 0 10px 20px rgba(15, 23, 42, 0.10); }
         .option-button.btn-classic:focus-visible { outline: 3px solid {{ accent }}; outline-offset: 3px; }
         .option-button.btn-classic.press-pop {
-            animation: optionPressPop 360ms cubic-bezier(0.22, 1, 0.36, 1);
+            animation: optionPressPop 260ms cubic-bezier(0.22, 1, 0.36, 1);
         }
         .option-button.btn-classic.press-pop::after {
             animation: optionPressRipple 420ms ease-out;
@@ -3797,6 +5053,27 @@ window.$ = $; window.jQuery = $;
         .matching-summary { margin-top: 12px; color: {{ '#EDEEF3' if is_millionaire else '#111827' }}; font-size: 0.95em; }
         .matching-chip { display:inline-block; margin:6px 8px 0 0; padding:6px 10px; border-radius:999px; background: rgba(34,197,94,0.12); border: 1px solid rgba(34,197,94,0.35); color: {{ '#A7F3D0' if is_millionaire else '#065F46' }}; }
         .matching-wrap { position: relative; width: 100%; }
+        .matching-col > .option-button.btn-classic {
+            align-items:center;
+            justify-content:center;
+            overflow-wrap:anywhere;
+        }
+        .option-button.btn-classic .matching-label {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            text-align: center;
+            width: 100%;
+            min-height: 84px;
+            padding: 15px 18px;
+            font-weight: 700;
+            color: #0F172A;
+            word-break:break-word;
+            overflow-wrap:anywhere;
+        }
+        @media (max-width: 640px) {
+            .option-button.btn-classic .matching-label { min-height: 76px; padding: 13px 14px; }
+        }
         .matching-lines { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; z-index:2; overflow: visible; }
         .match-line-shadow { stroke: rgba(0,0,0,0.22); stroke-width: 8; fill:none; opacity:0.38; }
         .match-line { stroke: {{ accent }}; stroke-width: 4; fill: none; opacity: 0.95; stroke-linecap: round; }
@@ -3862,10 +5139,11 @@ window.$ = $; window.jQuery = $;
         .option-image {
             width: 100%;
             height: 100%;
-            object-fit: cover;
+            object-fit: contain;
             display: block;
+            background: rgba(255, 255, 255, 0.92);
         }
-        .option-image-wrap { position: relative; display:inline-block; width: 84px; height: 84px; border-radius: 8px; overflow: hidden; margin-right: 15px; vertical-align: middle; }
+        .option-image-wrap { position: relative; display:inline-block; width: 84px; height: 84px; border-radius: 10px; overflow: hidden; margin-left: 4px; vertical-align: middle; border: 1px solid rgba(148, 163, 184, 0.28); box-shadow: 0 6px 14px rgba(148, 163, 184, 0.16); flex-shrink: 0; }
         .option-image-wrap.loading::before { content: ""; position: absolute; inset: 0; background: linear-gradient(90deg, rgba(255,255,255,0.08) 25%, rgba(255,255,255,0.18) 50%, rgba(255,255,255,0.08) 75%); animation: shimmer 1.2s infinite; }
         
         .lifelines { display:flex; gap:12px; justify-content:center; align-items:center; margin: 4px 0 12px; flex-wrap: wrap; }
@@ -3918,7 +5196,6 @@ window.$ = $; window.jQuery = $;
             display: none;
             color: {{ '#E5E7EB' if is_millionaire else '#111827' }};
             box-shadow: 0 8px 16px rgba(15, 23, 42, 0.18);
-            backdrop-filter: blur(8px);
             /* Explanation must be below options and inside Region 2 */
             position: relative;
             z-index: 1;
@@ -3963,7 +5240,6 @@ window.$ = $; window.jQuery = $;
             border: 1px solid {{ 'rgba(148, 163, 184, 0.35)' if is_millionaire else 'rgba(148, 163, 184, 0.28)' }};
             border-radius: 22px;
             box-shadow: {{ '0 30px 80px rgba(0,0,0,0.55)' if is_millionaire else '0 28px 70px rgba(15, 23, 42, 0.16)' }};
-            backdrop-filter: blur(10px);
         }
         
         .game-over h2 {
@@ -3990,14 +5266,23 @@ window.$ = $; window.jQuery = $;
             padding:18px;
         }
         .loading-card{
+            width:min(520px, 100%);
             min-width:min(320px, 88vw);
             padding:18px 22px;
             border-radius:18px;
             text-align:center;
+            overflow-wrap:anywhere;
             color: {{ '#EDEEF3' if is_millionaire else '#0F172A' }};
             background: {{ 'rgba(15,23,42,0.96)' if is_millionaire else 'linear-gradient(180deg, rgba(255,255,255,0.98), rgba(248,250,252,0.98))' }};
             border: 1px solid {{ 'rgba(148,163,184,0.45)' if is_millionaire else 'rgba(148, 163, 184, 0.24)' }};
             box-shadow: {{ '0 20px 40px rgba(0,0,0,0.45)' if is_millionaire else '0 20px 48px rgba(15, 23, 42, 0.14)' }};
+        }
+        #loading-typing{
+            margin-top:10px;
+            font-size:14px;
+            font-weight:600;
+            letter-spacing:0.4px;
+            color: {{ 'rgba(229,231,235,0.88)' if is_millionaire else '#475569' }};
         }
         .loading-title{
             font-weight:800;
@@ -4043,7 +5328,7 @@ window.$ = $; window.jQuery = $;
         }
         
         @keyframes shimmer { from { transform: translateX(-100%); } to { transform: translateX(100%); } }
-        @keyframes pulse { 0% { filter: brightness(1); } 50% { filter: brightness(1.25); } 100% { filter: brightness(1); } }
+        @keyframes pulse { 0% { opacity: 1; } 50% { opacity: 0.7; } 100% { opacity: 1; } }
         @media (orientation: portrait) {
             .game-container { aspect-ratio: {{ '9 / 16' if is_millionaire else 'unset' }}; max-width: {{ '480px' if is_millionaire else '100%' }}; }
             .game-stats { flex-direction: column; gap: 10px; }
@@ -4140,6 +5425,7 @@ window.$ = $; window.jQuery = $;
         <div class="intro-card">
             <h2 class="intro-title">{{ project_name or 'EduPlay Quiz' }}</h2>
             <p class="intro-description">{{ labels.rules or 'Luật chơi: Đọc câu hỏi và chọn đáp án đúng.' }}</p>
+            {% if labels.device_notice_body %}<div class="device-notice"><strong>{{ labels.device_notice_title }}</strong><p>{{ labels.device_notice_body }}</p></div>{% endif %}
             <button id="start-btn" class="start-button" onclick="onStartClick()" title="{{ labels.rules or 'Luật chơi: Đọc câu hỏi và chọn đáp án đúng.' }}">{{ labels.start or 'Bắt đầu' }}</button>
         </div>
     </div>
@@ -4217,7 +5503,27 @@ window.$ = $; window.jQuery = $;
     </div>
     <div id="popup" class="popup-overlay"><div class="popup-panel" id="popup-panel"></div></div>
     <div id="feedback-popup" class="feedback-popup" aria-hidden="true"><div id="feedback-popup-text" class="feedback-popup-text"></div></div>
+    <div id="eduImageLightbox" aria-hidden="true"><span class="close-hint">✕ Nhấn để đóng — ESC</span><img id="eduLightboxImg" alt="Phóng to hình câu hỏi"></div>
 
+    <script>
+        // Lightbox delegation for question image (classic)
+        (function(){
+          function closeLb(){ var lb=document.getElementById('eduImageLightbox'); if(lb) lb.classList.remove('open'); }
+          document.addEventListener('click', function(e){
+            var t=e.target;
+            if(t && t.id==='question-image' && t.getAttribute('src')){
+              var lb=document.getElementById('eduImageLightbox'); var lbImg=document.getElementById('eduLightboxImg');
+              if(lb && lbImg && t.src){ lbImg.src=t.src; lb.classList.add('open'); e.preventDefault(); }
+            }
+          });
+          document.addEventListener('click', function(e){
+            var lb=document.getElementById('eduImageLightbox');
+            if(!lb || !lb.classList.contains('open')) return;
+            if(e.target.id==='eduImageLightbox' || e.target.id==='eduLightboxImg' || e.target.classList.contains('close-hint')) closeLb();
+          });
+          document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeLb(); });
+        })();
+    </script>
     <script>
         const __SPRITE_URL = '{{ sprite_url }}';
         const labels = {{ labels_json }};
@@ -4641,7 +5947,7 @@ window.$ = $; window.jQuery = $;
                 const a = new Audio(src);
                 if (key === 'question_bg') { a.loop = true; a.volume = 0.3; }
                 // Không set muted trong chế độ preview để tránh bị chặn autoplay
-                if (!window.__EDUPLAY_QUICK_PREVIEW_AUTO_START) {
+                if (!window.__EDUPLAY_PREVIEW) {
                     try{ a.muted = true; }catch(e){}
                 }
                 return a;
@@ -4653,14 +5959,14 @@ window.$ = $; window.jQuery = $;
             audioMap.hover = getAudio('hover');
             audioMap.click = getAudio('click');
             audioMap.select = getAudio('select');
-            audioMap.good = settings.correct_sound_base64 ? (function(){ const a = new Audio(settings.correct_sound_base64); if (!window.__EDUPLAY_QUICK_PREVIEW_AUTO_START) try{ a.muted = true; }catch(e){} return a; })() : getAudio('good');
-            audioMap.bad = settings.wrong_sound_base64 ? (function(){ const a = new Audio(settings.wrong_sound_base64); if (!window.__EDUPLAY_QUICK_PREVIEW_AUTO_START) try{ a.muted = true; }catch(e){} return a; })() : getAudio('bad');
+            audioMap.good = settings.correct_sound_base64 ? (function(){ const a = new Audio(settings.correct_sound_base64); if (!window.__EDUPLAY_PREVIEW) try{ a.muted = true; }catch(e){} return a; })() : getAudio('good');
+            audioMap.bad = settings.wrong_sound_base64 ? (function(){ const a = new Audio(settings.wrong_sound_base64); if (!window.__EDUPLAY_PREVIEW) try{ a.muted = true; }catch(e){} return a; })() : getAudio('bad');
             audioMap.error = getAudio('error');
             initFeedbackSoundPools();
         }
         function normalizeFeedbackText(text){
             try{
-                return String(text || '').replace(/[_]+/g, ' ').replace(/\s+/g, ' ').trim();
+                return String(text || '').replace(/[_]+/g, ' ').replace(/\\s+/g, ' ').trim();
             }catch(e){
                 return '';
             }
@@ -4673,7 +5979,7 @@ window.$ = $; window.jQuery = $;
                 const audio = new Audio(src);
                 audio.preload = 'auto';
                 // Không set muted trong chế độ preview để tránh bị chặn autoplay
-                if (!window.__EDUPLAY_QUICK_PREVIEW_AUTO_START) {
+                if (!window.__EDUPLAY_PREVIEW) {
                     try{ audio.muted = true; }catch(e){}
                 }
                 return {
@@ -5023,19 +6329,26 @@ window.$ = $; window.jQuery = $;
                 }
             } catch(e) {}
             
-            // Show question image if available with shimmer loader
+            // Show question image if available with shimmer loader (supports image_base64, image, data: and http)
             const questionImage = document.getElementById('question-image');
             const imageContainer = document.getElementById('question-image-container');
-            if (question.image_base64) {
+            const _imgSrc = question.image_base64 || question.image || '';
+            if (_imgSrc) {
+                const _src = _imgSrc.startsWith('data:') || _imgSrc.startsWith('http') || _imgSrc.startsWith('blob:') ? _imgSrc : ('data:image/png;base64,' + _imgSrc);
                 imageContainer.style.display = 'block';
+                imageContainer.classList.add('has-image');
                 imageContainer.classList.add('loading');
-                questionImage.onload = ()=>{ try{ imageContainer.classList.remove('loading'); questionImage.style.display='block'; }catch(e){} };
-                questionImage.onerror = ()=>{ try{ imageContainer.classList.remove('loading'); questionImage.style.display='none'; }catch(e){} };
-                questionImage.src = question.image_base64;
+                questionImage.onload = ()=>{ try{ imageContainer.classList.remove('loading'); questionImage.style.display='block'; imageContainer.classList.add('has-image'); }catch(e){} };
+                questionImage.onerror = ()=>{ try{ imageContainer.classList.remove('loading'); questionImage.style.display='none'; imageContainer.classList.remove('has-image'); imageContainer.style.display='none'; }catch(e){} };
+                questionImage.alt = String(question.question || '').slice(0, 120) || 'Hình câu hỏi';
+                questionImage.src = _src;
+                questionImage.style.cursor = 'zoom-in';
             } else {
                 imageContainer.classList.remove('loading');
+                imageContainer.classList.remove('has-image');
                 questionImage.style.display = 'none';
                 imageContainer.style.display = 'none';
+                try{ questionImage.removeAttribute('src'); }catch(e){}
             }
             
             const optionsContainer = document.getElementById('options-container');
@@ -5043,11 +6356,11 @@ window.$ = $; window.jQuery = $;
             try{ if(matchingCleanup){ matchingCleanup(); matchingCleanup=null; } }catch(e){ matchingCleanup=null; }
             
             const cfg = gameData.game_config || {};
-            const clickSfx = audioMap.click || (cfg.click_sound_base64 ? (function(){ const a = new Audio(cfg.click_sound_base64); if (!window.__EDUPLAY_QUICK_PREVIEW_AUTO_START) try{ a.muted = true; }catch(e){} return a; })() : null);
+            const clickSfx = audioMap.click || (cfg.click_sound_base64 ? (function(){ const a = new Audio(cfg.click_sound_base64); if (!window.__EDUPLAY_PREVIEW) try{ a.muted = true; }catch(e){} return a; })() : null);
             const hoverSfx = audioMap.hover || null;
             const selectSfx = audioMap.select || null;
-            const correctSfx = audioMap.good || (cfg.correct_sound_base64 ? (function(){ const a = new Audio(cfg.correct_sound_base64); if (!window.__EDUPLAY_QUICK_PREVIEW_AUTO_START) try{ a.muted = true; }catch(e){} return a; })() : null);
-            const wrongSfx = audioMap.bad || (cfg.wrong_sound_base64 ? (function(){ const a = new Audio(cfg.wrong_sound_base64); if (!window.__EDUPLAY_QUICK_PREVIEW_AUTO_START) try{ a.muted = true; }catch(e){} return a; })() : null);
+            const correctSfx = audioMap.good || (cfg.correct_sound_base64 ? (function(){ const a = new Audio(cfg.correct_sound_base64); if (!window.__EDUPLAY_PREVIEW) try{ a.muted = true; }catch(e){} return a; })() : null);
+            const wrongSfx = audioMap.bad || (cfg.wrong_sound_base64 ? (function(){ const a = new Audio(cfg.wrong_sound_base64); if (!window.__EDUPLAY_PREVIEW) try{ a.muted = true; }catch(e){} return a; })() : null);
             const lifelinesBar = document.getElementById('lifelines');
             lifelinesBar.style.display = millionaireMode ? 'flex' : 'none';
 
@@ -5093,6 +6406,26 @@ window.$ = $; window.jQuery = $;
                         const button = document.createElement('button');
                         button.className = 'option-button btn-classic';
                         setClassicOptionContent(button, String.fromCharCode(65 + index), option);
+                        try {
+                            const optImgs = question.option_images_base64 || [];
+                            const imgSrc = String(optImgs[index] || '');
+                            if (imgSrc.startsWith('data:')) {
+                                const imgWrap = document.createElement('span');
+                                imgWrap.className = 'option-image-wrap loading';
+                                const optImg = document.createElement('img');
+                                optImg.className = 'option-image';
+                                optImg.alt = '';
+                                optImg.onload = () => { try { imgWrap.classList.remove('loading'); } catch(e){} };
+                                optImg.onerror = () => { try { imgWrap.remove(); } catch(e){} };
+                                optImg.src = imgSrc;
+                                imgWrap.appendChild(optImg);
+                                const innerEl = button.querySelector('.option-inner');
+                                const trailEl = innerEl ? innerEl.querySelector('.option-trail') : null;
+                                if (innerEl && trailEl) { innerEl.insertBefore(imgWrap, trailEl); }
+                                else if (innerEl) { innerEl.appendChild(imgWrap); }
+                                else { button.appendChild(imgWrap); }
+                            }
+                        } catch (e) {}
                         button.onclick = () => { 
                             try{ if(clickSfx){ clickSfx.currentTime = 0; clickSfx.play().catch(()=>{}); } }catch(e){}
                             try{ if(selectSfx){ selectSfx.currentTime = 0; selectSfx.play().catch(()=>{}); } }catch(e){}
@@ -5822,7 +7155,15 @@ window.$ = $; window.jQuery = $;
                     gc['wrong_sound_base64'] = wrong_pool[0].get('src')
         except Exception:
             pass
-        # Normalize questions from project_data
+        # Normalize questions from project_data (with project_dir for relative media/ + OneDrive)
+        _proj_dir2 = None
+        try:
+            pid2 = str(project_data.get('id') or '').strip()
+            if pid2:
+                from eduplay.core.path_resolver import PathResolver as _PR2b
+                _proj_dir2 = _PR2b.resolve_projects_dir() / pid2
+        except Exception:
+            _proj_dir2 = None
         try:
             raw_qs = list(project_data.get('questions', []) or [])
             normalized = []
@@ -5871,6 +7212,60 @@ window.$ = $; window.jQuery = $;
                     'correct_answer': q.get('correct_answer') if q.get('correct_answer') is not None else (q.get('correctAnswer') if q.get('correctAnswer') is not None else None),
                     'explanation': q.get('explanation') or q.get('feedback') or ''
                 }
+                # Preserve question image (base64 / data URI / local file path) — robust OneDrive + media/ relative
+                try:
+                    img_b64 = q.get('image_base64') or ''
+                    if (not img_b64) and isinstance(q.get('image'), str) and str(q.get('image')).strip().lower().startswith('data:'):
+                        img_b64 = str(q.get('image')).strip()
+                    if not img_b64:
+                        raw_img = str(q.get('image') or '').strip()
+                        if raw_img and not raw_img.lower().startswith('data:'):
+                            try:
+                                from eduplay.core.path_resolver import PathResolver as _PRb
+                                from pathlib import Path as _PtB
+                                rp = _PRb.resolve_user_file(raw_img, project_dir=_proj_dir2)
+                                if rp is not None:
+                                    img_b64 = self._file_to_base64(str(rp), force_base64=True)
+                                else:
+                                    img_b64 = self._file_to_base64(raw_img, force_base64=True)
+                                    if not img_b64 and _proj_dir2 is not None:
+                                        cand = _proj_dir2 / raw_img
+                                        if cand.exists():
+                                            img_b64 = self._file_to_base64(str(cand), force_base64=True)
+                                        elif (_proj_dir2 / 'media' / _PtB(raw_img).name).exists():
+                                            img_b64 = self._file_to_base64(str(_proj_dir2 / 'media' / _PtB(raw_img).name), force_base64=True)
+                            except Exception:
+                                img_b64 = self._file_to_base64(raw_img, force_base64=True)
+                    # file:// only works locally — force real base64 so the game is portable
+                    if isinstance(img_b64, str) and img_b64.startswith('file://'):
+                        raw_img = str(q.get('image') or '').strip()
+                        try:
+                            from eduplay.core.path_resolver import PathResolver as _PRb2
+                            rp2 = _PRb2.resolve_user_file(raw_img, project_dir=_proj_dir2)
+                            reconverted = self._file_to_base64(str(rp2) if rp2 is not None else raw_img, force_base64=True) if raw_img else ''
+                        except Exception:
+                            reconverted = self._file_to_base64(raw_img, force_base64=True) if raw_img else ''
+                        img_b64 = reconverted or ''
+                    if img_b64:
+                        nq['image_base64'] = img_b64
+                        nq['image'] = img_b64
+                except Exception:
+                    pass
+                # Preserve per-option images
+                try:
+                    opt_imgs = q.get('option_images_base64')
+                    if not (isinstance(opt_imgs, list) and opt_imgs):
+                        raw_opts = q.get('option_images') or []
+                        if isinstance(raw_opts, list) and any(str(x or '').strip() for x in raw_opts):
+                            opt_imgs = [
+                                (str(p) if str(p).startswith('data:') else self._file_to_base64(str(p), force_base64=True))
+                                if str(p or '').strip() else ''
+                                for p in raw_opts
+                            ]
+                    if isinstance(opt_imgs, list) and any(opt_imgs):
+                        nq['option_images_base64'] = opt_imgs
+                except Exception:
+                    pass
                 try:
                     ca = nq['correct_answer']
                     if isinstance(ca, str):
@@ -6164,6 +7559,15 @@ window.$ = $; window.jQuery = $;
                     image_base64 = q.get('image_base64') or ''
                     if (not image_base64) and isinstance(q.get('image'), str) and str(q.get('image')).startswith('data:'):
                         image_base64 = str(q.get('image'))
+                    if (not image_base64):
+                        raw_img = str(q.get('image') or '').strip()
+                        if raw_img and not raw_img.startswith('data:'):
+                            image_base64 = self._file_to_base64(raw_img, force_base64=True)
+                    # file:// only works locally — force real base64 so the game is portable
+                    if image_base64.startswith('file://'):
+                        raw_img = str(q.get('image') or '').strip()
+                        reconverted = self._file_to_base64(raw_img, force_base64=True) if raw_img else ''
+                        image_base64 = reconverted or ''
                     if image_base64:
                         nq['image_base64'] = image_base64
                 except Exception:
@@ -6432,6 +7836,8 @@ window.$ = $; window.jQuery = $;
                     'i18n_start_title': I18n.t('fishing.start_title', lang),
                     'i18n_start_button': I18n.t('fishing.start_button', lang),
                     'i18n_start_rules': I18n.t('fishing.start_rules', lang),
+                    'i18n_device_notice_title': I18n.t('common.device_notice_title', lang) or 'Thông báo',
+                    'i18n_device_notice_body': I18n.t('common.device_notice_body', lang) or '',
                     'i18n_audio_not_supported': I18n.t('fishing.audio_not_supported', lang),
                     'i18n_msg_low': I18n.t('quiz.msg_low', lang) or 'Cố gắng lên nhé!',
                     'i18n_msg_mid': I18n.t('quiz.msg_mid', lang) or 'Gần được rồi!',

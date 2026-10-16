@@ -27,6 +27,28 @@ class TestI18nKeyCoverage(unittest.TestCase):
                 f"Missing i18n key '{key}' in {lang}.json",
             )
 
+    def test_new_ui_keys_exist(self):
+        for key in (
+            "editor.save_status.saved",
+            "editor.save_status.saving",
+            "editor.save_status.error",
+            "editor.save_status.dirty",
+            "browser.delete_project_locked",
+            "ai.local_not_ready_title",
+            "ai.local_not_ready_msg",
+            "ai.local_not_ready_fix",
+            "ai.local_error_label",
+            "chat.attach_title",
+            "chat.attach_filter",
+            "millionaire.play_game",
+            "millionaire.leaderboard",
+            "millionaire.main_menu",
+            "millionaire.leaderboard_title",
+            "common.device_notice_title",
+            "common.device_notice_body",
+        ):
+            self._assert_key_exists(key)
+
     def test_acknowledgements_keys_exist(self):
         self._assert_key_exists("credits.ack.title")
         self._assert_key_exists("credits.ack.body")

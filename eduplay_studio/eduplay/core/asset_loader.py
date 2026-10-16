@@ -9,9 +9,23 @@ import sys
 import tempfile
 from pathlib import Path
 
-from cryptography.hazmat.primitives.ciphers.aead import AESGCM
-
 from eduplay.core.path_resolver import PathResolver
+
+_AESGCM = None
+
+
+def _aesgcm():
+    """Nap `cryptography` LAZY (chi khi that su giai ma asset).
+
+    Module nay duoc import luc khoi dong app; nap AESGCM o cap module mat
+    ~85ms ma phan lon so lan app KHONG co asset can giai ma.
+    """
+    global _AESGCM
+    if _AESGCM is None:
+        from cryptography.hazmat.primitives.ciphers.aead import AESGCM as _A
+
+        _AESGCM = _A
+    return _AESGCM
 
 MAGIC = b"EPLA"
 KEY_MAGIC = b"EPLK"
@@ -37,15 +51,60 @@ def derive_asset_key(seed: bytes, salt: bytes) -> bytes:
     )
 
 
+def _is_frozen_app() -> bool:
+    """True when running from a frozen/compiled bundle (exe).
+
+    Covers PyInstaller/cx_Freeze (sys.frozen / sys._MEIPASS) and Nuitka
+    standalone/onefile, which sets neither: Nuitka sets sys.__compiled__
+    and the process executable is our own EduPlayStudio.exe, not python.
+    """
+    try:
+        if bool(getattr(sys, "frozen", False)):
+            return True
+    except Exception:
+        pass
+    try:
+        if bool(getattr(sys, "__compiled__", False)):
+            return True
+    except Exception:
+        pass
+    try:
+        if getattr(sys, "_MEIPASS", None):
+            return True
+    except Exception:
+        pass
+    try:
+        base = os.path.basename(str(sys.executable or "")).lower()
+        if base and "python" not in base:
+            return True
+    except Exception:
+        pass
+    return False
+
+
 def _get_runtime_root() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys._MEIPASS)
+    if _is_frozen_app():
+        try:
+            return Path(sys.executable).resolve().parent
+        except Exception:
+            pass
+        try:
+            return Path(os.path.dirname(os.path.abspath(sys.executable)))
+        except Exception:
+            pass
     return Path(__file__).parent.parent.parent
 
 
 def _get_runtime_exe_path() -> Path | None:
-    if not getattr(sys, "frozen", False):
+    if not _is_frozen_app():
         return None
+    try:
+        exe = Path(sys.executable)
+        if exe.exists() and exe.is_file():
+            return exe
+    except Exception:
+        pass
+    return None
 
 
 def _get_runtime_cache_dir() -> Path:
@@ -100,7 +159,7 @@ def _unwrap_seed(blob: bytes, salt: bytes) -> bytes:
         raise ValueError("Wrapped key blob is too short")
     nonce = blob[:NONCE_SIZE]
     ciphertext = blob[NONCE_SIZE:]
-    return AESGCM(wrap_key).decrypt(nonce, ciphertext, None)
+    return _aesgcm()(wrap_key).decrypt(nonce, ciphertext, None)
 
 
 def _read_key_blob_from_exe(exe_path: Path) -> bytes | None:
@@ -133,7 +192,7 @@ def load_key() -> bytes:
     if _KEY_CACHE is not None:
         return _KEY_CACHE
 
-    if not getattr(sys, "frozen", False):
+    if not _is_frozen_app():
         _KEY_CACHE = b""
         return _KEY_CACHE
 
@@ -174,7 +233,7 @@ def decrypt_asset(data: bytes) -> bytes:
     if not key:
         return ciphertext
 
-    decrypted = AESGCM(key).decrypt(nonce, ciphertext, None)
+    decrypted = _aesgcm()(key).decrypt(nonce, ciphertext, None)
     return decrypted[:orig_size]
 
 

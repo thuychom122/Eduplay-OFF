@@ -64,7 +64,62 @@ class MillionaireTemplateMerger:
                 normalized_question['phone_hint'] = q['phone_hint']
             if 'audience_hint' in q:
                 normalized_question['audience_hint'] = q['audience_hint']
-            
+
+            # Preserve question image — accept data: URIs, file:// (for preview), and
+            # already-bundled base64; also fallback to raw image path via _file_to_base64-like handling.
+            _img = q.get('image_base64') or ''
+            if not _img and isinstance(q.get('image'), str):
+                raw_img = str(q.get('image') or '').strip()
+                if raw_img.lower().startswith('data:'):
+                    _img = raw_img
+                elif raw_img.lower().startswith('file:'):
+                    # file:// from old bundles — keep but prefer data: for portability;
+                    # if we can, let it pass through so it still shows in preview.
+                    _img = raw_img
+                elif raw_img:
+                    # Try to resolve via PathResolver and convert to data: if possible
+                    try:
+                        from eduplay.core.path_resolver import PathResolver as _PR
+                        from pathlib import Path as _Path
+                        import base64 as _b64, mimetypes as _mt
+                        norm = _PR.normalize_user_path(raw_img)
+                        resolved = _PR.resolve_user_file(norm)
+                        # If still not found and it's a project-relative media/ path, search all projects
+                        if resolved is None and norm.lower().startswith("media/"):
+                            try:
+                                proot = _PR.resolve_projects_dir()
+                                fname = norm.split("/", 1)[1] if "/" in norm else norm
+                                for proj in proot.iterdir():
+                                    cand2 = proj / "media" / fname
+                                    if cand2.exists() and cand2.is_file():
+                                        resolved = cand2
+                                        break
+                                    # also try direct media/ai.png under proot/media?
+                                    cand3 = proot / norm
+                                    if cand3.exists():
+                                        resolved = cand3
+                                        break
+                            except Exception:
+                                pass
+                        # Also try project-relative media/ if project id available elsewhere
+                        cand = resolved if resolved is not None else (_Path(norm) if _Path(norm).exists() else None)
+                        if cand is not None and cand.exists():
+                            try:
+                                mime, _ = _mt.guess_type(str(cand))
+                                data = cand.read_bytes()
+                                b64 = _b64.b64encode(data).decode('utf-8')
+                                _img = f"data:{mime or 'application/octet-stream'};base64,{b64}"
+                            except Exception:
+                                _img = raw_img
+                        else:
+                            _img = raw_img
+                    except Exception:
+                        _img = raw_img
+            if _img:
+                # Accept both data: and file: (file:// only for local preview)
+                # Published exports will have data: thanks to export_service fix.
+                normalized_question['image'] = _img
+
             normalized_questions.append(normalized_question)
         
         return normalized_questions

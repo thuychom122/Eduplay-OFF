@@ -7,6 +7,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QPushButton,
 from PySide6.QtCore import Signal, Qt, QSize, QPoint, QPropertyAnimation, QEasingCurve, QParallelAnimationGroup, QTimer
 from PySide6.QtGui import QFont, QIcon
 from eduplay.ui.icon_factory import build_line_icon
+from eduplay.ui.motion import ms as _motion_ms
 
 from eduplay.core.asset_loader import materialize_asset_file
 
@@ -21,6 +22,8 @@ class HomeScreen(QWidget):
     import_questions_clicked = Signal()
     quick_publish_clicked = Signal()
     resume_clicked = Signal()
+    play_recent_clicked = Signal()
+    screenshot_clicked = Signal()
     chat_toggled = Signal()
     help_requested = Signal()
     settings_requested = Signal()
@@ -87,15 +90,15 @@ class HomeScreen(QWidget):
         self.quick_create_btn = self._create_quick_button("home.quick.create", "Tạo mới", self.on_create_new)
         self.quick_recent_btn = self._create_quick_button("home.quick.recent", "Mở gần đây", self.on_open_recent)
         self.quick_import_btn = self._create_quick_button("home.quick.import", "Import câu hỏi", self.on_import_questions)
-        self.quick_publish_btn = self._create_quick_button("home.quick.publish", "Xuất bản nhanh", self.on_quick_publish)
-        self.resume_btn = self._create_quick_button("home.quick.resume", "Tiếp tục chỉnh sửa", self.on_resume)
-        self.resume_btn.setVisible(False)
+        self.quick_play_btn = self._create_quick_button("home.quick.play", "Chơi dự án gần đây", self.on_play_recent)
+        self.screenshot_btn = self._create_quick_button("home.quick.screenshot", "Chụp ảnh màn hình", self.on_screenshot)
+        self.screenshot_btn.setVisible(True)
         for btn in (
             self.quick_create_btn,
             self.quick_recent_btn,
             self.quick_import_btn,
-            self.quick_publish_btn,
-            self.resume_btn,
+            self.quick_play_btn,
+            self.screenshot_btn,
         ):
             quick_layout.addWidget(btn)
         content_layout.addWidget(self.quick_actions_host)
@@ -109,7 +112,10 @@ class HomeScreen(QWidget):
             pass
         cards_layout = QHBoxLayout(self.cards_host)
         cards_layout.setSpacing(30)
-        cards_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        # KHONG dung AlignCenter o day: no lam layout bo qua vie chia be rong
+        # nen 3 card co be rong khac nhau (card "Choi" bi hep, mo ta bi cat
+        # chu). Chi can canh giua theo chieu doc.
+        cards_layout.setAlignment(Qt.AlignmentFlag.AlignVCenter)
         try:
             from PySide6.QtWidgets import QLayout
             cards_layout.setSizeConstraint(QLayout.SizeConstraint.SetMinimumSize)
@@ -181,8 +187,71 @@ class HomeScreen(QWidget):
 
         self.cards_layout = cards_layout
         content_layout.addWidget(self.cards_host)
-        
+
+        # Chieu cao that cua doan xuong dong chi biet sau khi co be rong that
+        # nen can tinh lai sau layout (xem _sync_card_heights).
+        try:
+            for _i, _c in enumerate((self.create_card, self.edit_card,
+                                     self.play_card)):
+                cards_layout.setStretch(_i, 1)
+            QTimer.singleShot(0, self._sync_card_heights)
+            # Lan nua chay sau khi animation vao chay xong va doan mo ta
+            # da co be rong that.
+            QTimer.singleShot(700, self._sync_card_heights)
+        except Exception:
+            pass
+
         layout.addWidget(content_area, 1)
+
+    def _sync_card_heights(self):
+        """Dat chieu cao chung cho 3 card = chieu cao noi dung can thiet.
+
+        Truoc day moi card chi dat min 240px. Doan mo ta cua card "Choi" dai
+        hon nen bi cat chu o ca dau va cuoi (nhan chu co can giua, text vuot
+        khung nen Qt cat deu o hai dau).
+
+        Chieu cao chu phu thuoc be rong thuc te nen phai chay sau layout, va
+        chay lap lai toi da 3 luot: moi luot tang chieu cao card, nhan chu
+        chiem them phan cao vua duoc cap -> vong sau tinh lai phan "con lai".
+        """
+        try:
+            cards = [getattr(self, "create_card", None),
+                     getattr(self, "edit_card", None),
+                     getattr(self, "play_card", None)]
+            cards = [c for c in cards if c is not None]
+            if not cards:
+                return
+            if max(1, cards[0].width()) <= 1:
+                return  # chua co be rong that -> cho layout chay tiep
+            for _ in range(3):
+                changed = False
+                for c in cards:
+                    lbl = c.findChild(QLabel, "card-description")
+                    if lbl is None:
+                        continue
+                    # QLabel xuong dong khong tu xin du chieu cao (sizeHint
+                    # tinh theo be rong mac dinh), nen phan biet cho no.
+                    text_h = lbl.heightForWidth(max(80, lbl.width()))
+                    if text_h > 0 and lbl.minimumHeight() != text_h:
+                        lbl.setMinimumHeight(text_h)
+                        changed = True
+                if not changed:
+                    break
+                self.cards_layout.activate()
+
+            # Chieu cao chung cho ca 3 card theo noi dung can thiet nhat.
+            needed = 240
+            for c in cards:
+                try:
+                    needed = max(needed, c.layout().minimumSize().height())
+                except Exception:
+                    pass
+            for c in cards:
+                if c.minimumHeight() != needed:
+                    c.setMinimumHeight(needed)
+            self.cards_layout.activate()
+        except Exception:
+            pass
     
     def create_action_card(self, icon, title, description, button_text, button_color, on_click, refs_prefix: str = None):
         """Create an action card"""
@@ -222,6 +291,9 @@ class HomeScreen(QWidget):
         except Exception:
             pass
         card_layout.addWidget(desc_label)
+        # Khoang trong giua mo ta va nut: 3 card co doan mo ta dai khac nhau
+        # nen day nut xuong day card de chung mot duong co dinh.
+        card_layout.addStretch(1)
 
         button = QPushButton(button_text)
         button.setObjectName("card-button")
@@ -261,7 +333,55 @@ class HomeScreen(QWidget):
             except Exception:
                 pass
         card.mouseReleaseEvent = _card_mouse_release
-        
+
+        # Hover "noi" + bong do: chi them khi chu vao card, nen chi 3 card
+        # co hieu ung (khong ton CPU lan nap app). Khong dung animation de
+        # tranh repaint lien tuc.
+        try:
+            from PySide6.QtGui import QColor
+            from PySide6.QtWidgets import QGraphicsDropShadowEffect
+
+            def _card_enter(event, c=card):
+                try:
+                    if getattr(c, "_hovered", False):
+                        return
+                    c._hovered = True
+                    base = QPoint(c.x(), c.y())
+                    c._hover_base = base
+                    if c.graphicsEffect() is None:
+                        shadow = QGraphicsDropShadowEffect(c)
+                        shadow.setBlurRadius(26)
+                        shadow.setOffset(0, 7)
+                        shadow.setColor(QColor(15, 23, 42, 46))
+                        c.setGraphicsEffect(shadow)
+                    c.move(QPoint(base.x(), base.y() - 4))
+                except Exception:
+                    pass
+                try:
+                    QFrame.enterEvent(c, event)
+                except Exception:
+                    pass
+
+            def _card_leave(event, c=card):
+                try:
+                    c._hovered = False
+                    base = getattr(c, "_hover_base", None)
+                    if base is None:
+                        base = QPoint(c.x(), c.y())
+                    c.setGraphicsEffect(None)
+                    c.move(QPoint(base.x(), base.y()))
+                except Exception:
+                    pass
+                try:
+                    QFrame.leaveEvent(c, event)
+                except Exception:
+                    pass
+
+            card.enterEvent = _card_enter
+            card.leaveEvent = _card_leave
+        except Exception:
+            pass
+
         if refs_prefix:
             setattr(self, f"{refs_prefix}_title_label", title_label)
             setattr(self, f"{refs_prefix}_desc_label", desc_label)
@@ -298,6 +418,7 @@ class HomeScreen(QWidget):
         card_bg = "#161925"
         card_border = "rgba(57,64,82,0.45)"
         card_hover_border = "rgba(127,86,217,0.65)"
+        card_hover_bg = "#1E2436"
         desc_color = "#A0AEC0"
         title_color = "#E5E7EB"
         subtitle_color = "#A0AEC0"
@@ -319,12 +440,14 @@ class HomeScreen(QWidget):
         }}
         #action-card {{
             border: 1px solid {card_border};
-            border-radius: 16px;
+            border-radius: 18px;
             padding: {padding}px;
             background-color: {card_bg};
         }}
         #action-card:hover {{
-            border-color: {card_hover_border};
+            border: 1px solid {card_hover_border};
+            border-radius: 18px;
+            background-color: {card_hover_bg};
         }}
         #card-topband {{
             background-color: transparent;
@@ -352,8 +475,7 @@ class HomeScreen(QWidget):
             font-size: {desc_size}px;
             line-height: 1.5;
             margin-bottom: {int(12*scale)}px;
-            background-color: {card_bg};
-            border-radius: {int(10*scale)}px;
+            background-color: transparent;
             padding: {int(8*scale)}px {int(14*scale)}px;
             color: {desc_color};
         }}
@@ -373,6 +495,10 @@ class HomeScreen(QWidget):
             background-color: #8B66E9;
             border-color: #8B66E9;
         }}
+        QPushButton#card-button[primary="true"]:pressed {{
+            background-color: #6D28D9;
+            border-color: #6D28D9;
+        }}
         QPushButton#card-button[success="true"] {{
             background-color: #12B76A;
             border-color: #12B76A;
@@ -382,6 +508,10 @@ class HomeScreen(QWidget):
             background-color: #22C77A;
             border-color: #22C77A;
         }}
+        QPushButton#card-button[success="true"]:pressed {{
+            background-color: #0E9E5C;
+            border-color: #0E9E5C;
+        }}
         QPushButton#card-button[warning="true"] {{
             background-color: #F79009;
             border-color: #F79009;
@@ -390,6 +520,10 @@ class HomeScreen(QWidget):
         QPushButton#card-button[warning="true"]:hover {{
             background-color: #FF9F1A;
             border-color: #FF9F1A;
+        }}
+        QPushButton#card-button[warning="true"]:pressed {{
+            background-color: #B54708;
+            border-color: #B54708;
         }}
         #home-quick-button {{
             background-color: #182230;
@@ -431,6 +565,7 @@ class HomeScreen(QWidget):
         card_bg = "#FFFFFF"
         card_border = "rgba(148,163,184,0.35)"
         card_hover_border = "rgba(127,86,217,0.55)"
+        card_hover_bg = "#F6F3FF"
         desc_color = "#4B5563"
         title_color = "#374151"
         subtitle_color = "#4B5563"
@@ -463,12 +598,14 @@ class HomeScreen(QWidget):
         }}
         #action-card {{
             border: 1px solid {card_border};
-            border-radius: 16px;
+            border-radius: 18px;
             padding: {padding}px;
             background-color: {card_bg};
         }}
         #action-card:hover {{
-            border-color: {card_hover_border};
+            border: 1px solid {card_hover_border};
+            border-radius: 18px;
+            background-color: {card_hover_bg};
         }}
         #card-topband {{
             background-color: transparent;
@@ -496,8 +633,7 @@ class HomeScreen(QWidget):
             font-size: {desc_size}px;
             line-height: 1.5;
             margin-bottom: {int(12*scale)}px;
-            background-color: {card_bg};
-            border-radius: {int(10*scale)}px;
+            background-color: transparent;
             padding: {int(8*scale)}px {int(14*scale)}px;
             color: {desc_color};
         }}
@@ -517,6 +653,10 @@ class HomeScreen(QWidget):
             background-color: #8B66E9;
             border-color: #8B66E9;
         }}
+        QPushButton#card-button[primary="true"]:pressed {{
+            background-color: #6D28D9;
+            border-color: #6D28D9;
+        }}
         QPushButton#card-button[success="true"] {{
             background-color: #12B76A;
             border-color: #12B76A;
@@ -526,6 +666,10 @@ class HomeScreen(QWidget):
             background-color: #22C77A;
             border-color: #22C77A;
         }}
+        QPushButton#card-button[success="true"]:pressed {{
+            background-color: #0E9E5C;
+            border-color: #0E9E5C;
+        }}
         QPushButton#card-button[warning="true"] {{
             background-color: #F79009;
             border-color: #F79009;
@@ -534,6 +678,10 @@ class HomeScreen(QWidget):
         QPushButton#card-button[warning="true"]:hover {{
             background-color: #FF9F1A;
             border-color: #FF9F1A;
+        }}
+        QPushButton#card-button[warning="true"]:pressed {{
+            background-color: #B54708;
+            border-color: #B54708;
         }}
         #home-quick-button {{
             background-color: rgba(255,255,255,0.92);
@@ -682,6 +830,9 @@ class HomeScreen(QWidget):
     
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        if getattr(self, "_cards_fit_width", -1) != self.width():
+            self._cards_fit_width = self.width()
+            QTimer.singleShot(0, self._sync_card_heights)
         if hasattr(self, 'chat_button'):
             btn_size = max(48, min(72, int(min(self.width(), self.height()) * 0.06)))
             self.chat_button.setFixedSize(btn_size, btn_size)
@@ -790,7 +941,13 @@ class HomeScreen(QWidget):
 
     def on_resume(self):
         self.resume_clicked.emit()
-    
+
+    def on_play_recent(self):
+        self.play_recent_clicked.emit()
+
+    def on_screenshot(self):
+        self.screenshot_clicked.emit()
+
     def show_help(self):
         """Emit help request to MainWindow"""
         self.help_requested.emit()
@@ -815,7 +972,7 @@ class HomeScreen(QWidget):
             except Exception:
                 pass
             base_delay = 40
-            stagger = 110
+            stagger = _motion_ms(110)
             lift = 26
             duration = 360
             for i, card in enumerate(cards):
@@ -832,18 +989,31 @@ class HomeScreen(QWidget):
                         card.setGraphicsEffect(eff)
                     eff.setOpacity(0.0)
                     pos_anim = QPropertyAnimation(card, b"pos", self)
-                    pos_anim.setDuration(duration)
+                    pos_anim.setDuration(_motion_ms(duration))
                     pos_anim.setStartValue(start_pos)
                     pos_anim.setEndValue(end_pos)
                     pos_anim.setEasingCurve(QEasingCurve.OutCubic)
                     op_anim = QPropertyAnimation(eff, b"opacity", self)
-                    op_anim.setDuration(duration - 40)
+                    op_anim.setDuration(_motion_ms(duration - 40))
                     op_anim.setStartValue(0.0)
                     op_anim.setEndValue(1.0)
                     op_anim.setEasingCurve(QEasingCurve.OutCubic)
                     grp = QParallelAnimationGroup(self)
                     grp.addAnimation(pos_anim)
                     grp.addAnimation(op_anim)
+
+                    def _cleanup_effect(card=card, grp=grp):
+                        # QGraphicsOpacityEffect giu nguyen tren card se
+                        # lam MOI khung hinh phai ve qua 1 buffer trung gian
+                        # (mat ~1 lan render) va chan hieu ung bong do.
+                        # Xoa xong moi giu hieu ung bong khi hover.
+                        try:
+                            if card.graphicsEffect() is eff:
+                                card.setGraphicsEffect(None)
+                        except Exception:
+                            pass
+
+                    grp.finished.connect(_cleanup_effect)
                     delay = base_delay + i * stagger
                     QTimer.singleShot(delay, grp.start)
                     self._entrance_anim_refs.append(grp)

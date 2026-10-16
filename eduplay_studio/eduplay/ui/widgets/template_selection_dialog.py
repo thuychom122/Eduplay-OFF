@@ -86,6 +86,15 @@ class TemplateSelectionDialog(QDialog):
         
         # Buttons
         buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        try:
+            _ok_btn = buttons.button(QDialogButtonBox.Ok)
+            if _ok_btn is not None:
+                _ok_btn.setText(I18n.t("input.ok", lang))
+            _cancel_btn = buttons.button(QDialogButtonBox.Cancel)
+            if _cancel_btn is not None:
+                _cancel_btn.setText(I18n.t("input.cancel", lang))
+        except Exception:
+            pass
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)

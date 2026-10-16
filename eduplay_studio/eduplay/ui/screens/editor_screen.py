@@ -3,7 +3,7 @@ from PySide6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                                 QFileDialog, QMessageBox, QApplication, QStyle)
 from PySide6.QtCore import Qt, Signal, QTimer, QPoint, QEvent, QSize
 from PySide6.QtCore import QPropertyAnimation, QEasingCurve, QParallelAnimationGroup
-from PySide6.QtGui import QIcon, QPixmap
+from PySide6.QtGui import QIcon, QPixmap, QKeySequence, QShortcut
 from PySide6.QtWidgets import QGraphicsOpacityEffect
 from eduplay.core.i18n import I18n
 from eduplay.core.settings_manager import SettingsManager
@@ -18,6 +18,7 @@ import random
 import tempfile
 from pathlib import Path
 
+from eduplay.ui.motion import ms as _motion_ms
 from eduplay.ui.widgets.editor_left_panel import EditorLeftPanel
 from eduplay.ui.widgets.editor_center_panel import EditorCenterPanel
 from eduplay.ui.widgets.editor_right_panel import EditorRightPanel
@@ -354,48 +355,53 @@ class EditorScreen(QWidget):
         try:
             base_w = owner.width() if owner and owner.width() > 0 else self.width()
             if base_w and base_w > 0:
-                max_w = max(320, int(base_w * 0.42))
+                max_w = max(300, min(int(base_w * 0.38), 450))
             else:
-                max_w = 420
+                max_w = 380
         except Exception:
-            max_w = 420
+            max_w = 380
         try:
             from PySide6.QtWidgets import QSizePolicy
             self._toast_widget.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
         except Exception:
             pass
         self._toast_widget.setMaximumWidth(max_w)
-        layout = QHBoxLayout(self._toast_widget)
+        self._toast_widget.setMaximumHeight(160)
+        layout = QVBoxLayout(self._toast_widget)
         layout.setContentsMargins(16, 12, 14, 12)
-        layout.setSpacing(12)
+        layout.setSpacing(6)
+        top_row = QHBoxLayout()
+        top_row.setSpacing(8)
         icon_label = QLabel(self._toast_widget)
-        icon_label.setFixedSize(32, 32)
+        icon_label.setFixedSize(22, 22)
         try:
             base_dir = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
             icon_path = os.path.join(base_dir, "resources", "icons", "notification.png")
             pix = QPixmap(icon_path)
             if not pix.isNull():
-                icon_label.setPixmap(pix.scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+                icon_label.setPixmap(pix.scaled(22, 22, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         except Exception:
             pass
-        layout.addWidget(icon_label, 0, Qt.AlignVCenter)
+        top_row.addWidget(icon_label, 0, Qt.AlignTop)
         self._toast_icon = icon_label
+        top_row.addStretch()
+        layout.addLayout(top_row)
         text_label = QLabel(text, self._toast_widget)
         text_label.setWordWrap(True)
-        text_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        text_label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
         text_label.setStyleSheet(
             f"""
             QLabel {{
                 color: {toast_fg};
                 background-color: transparent;
-                font-size: 14px;
+                font-size: 13px;
                 font-weight: 500;
                 letter-spacing: 0.2px;
             }}
             """
         )
         try:
-            text_label.setMinimumWidth(min(280, max_w))
+            text_label.setMinimumWidth(min(240, max_w - 40))
         except Exception:
             pass
         layout.addWidget(text_label, 1)
@@ -490,14 +496,14 @@ class EditorScreen(QWidget):
             except Exception:
                 pass
             self._toast_anim = QPropertyAnimation(target, b"pos", self)
-            self._toast_anim.setDuration(260)
+            self._toast_anim.setDuration(_motion_ms(260))
             self._toast_anim.setEasingCurve(QEasingCurve.OutCubic)
             self._toast_anim.setStartValue(start_pos)
             self._toast_anim.setEndValue(end_pos)
             opacity_effect = getattr(self, "_toast_opacity_effect", None)
             if opacity_effect is not None:
                 self._toast_opacity_anim = QPropertyAnimation(opacity_effect, b"opacity", self)
-                self._toast_opacity_anim.setDuration(220)
+                self._toast_opacity_anim.setDuration(_motion_ms(220))
                 self._toast_opacity_anim.setEasingCurve(QEasingCurve.OutCubic)
                 self._toast_opacity_anim.setStartValue(0.0)
                 self._toast_opacity_anim.setEndValue(1.0)
@@ -591,14 +597,14 @@ class EditorScreen(QWidget):
                 except Exception:
                     pass
                 self._toast_hide_anim = QPropertyAnimation(target, b"pos", self)
-                self._toast_hide_anim.setDuration(220)
+                self._toast_hide_anim.setDuration(_motion_ms(220))
                 self._toast_hide_anim.setEasingCurve(QEasingCurve.InCubic)
                 self._toast_hide_anim.setStartValue(start_pos)
                 self._toast_hide_anim.setEndValue(end_pos)
                 opacity_effect = getattr(self, "_toast_opacity_effect", None)
                 if opacity_effect is not None:
                     self._toast_hide_opacity_anim = QPropertyAnimation(opacity_effect, b"opacity", self)
-                    self._toast_hide_opacity_anim.setDuration(180)
+                    self._toast_hide_opacity_anim.setDuration(_motion_ms(180))
                     self._toast_hide_opacity_anim.setEasingCurve(QEasingCurve.InCubic)
                     self._toast_hide_opacity_anim.setStartValue(float(opacity_effect.opacity()))
                     self._toast_hide_opacity_anim.setEndValue(0.0)
@@ -665,7 +671,7 @@ class EditorScreen(QWidget):
             if hasattr(self, 'zoom_combo'):
                 self.zoom_combo.setMinimumWidth(90)
             base = 42
-            for btn in [getattr(self, 'back_btn', None), getattr(self, 'save_btn', None), getattr(self, 'preview_btn', None), getattr(self, 'export_web_btn', None), getattr(self, 'export_html_btn', None)]:
+            for btn in [getattr(self, 'back_btn', None), getattr(self, 'save_btn', None), getattr(self, 'undo_btn', None), getattr(self, 'redo_btn', None), getattr(self, 'preview_btn', None), getattr(self, 'export_web_btn', None), getattr(self, 'export_html_btn', None)]:
                 if btn:
                     btn.setFixedHeight(base)
         except Exception:
@@ -683,16 +689,24 @@ class EditorScreen(QWidget):
             owner = getattr(self, '_toast_owner', None)
             if owner is None:
                 owner = self.window() or self
-            geo = owner.rect()
             try:
                 target.adjustSize()
             except Exception:
                 pass
             w = target.width()
             h = target.height()
-            margin = 24
-            x = geo.right() - w - margin
-            y = geo.bottom() - h - margin
+            margin = 20
+            try:
+                screen = QApplication.primaryScreen().availableGeometry()
+                owner_global = owner.mapToGlobal(QPoint(0, 0))
+                visible_right = (screen.right() - owner_global.x())
+                visible_bottom = (screen.bottom() - owner_global.y())
+            except Exception:
+                geo = owner.rect()
+                visible_right = geo.right()
+                visible_bottom = geo.bottom()
+            x = visible_right - w - margin
+            y = visible_bottom - h - margin
             try:
                 btn = getattr(owner, "_chat_toggle_btn", None)
                 if btn is not None:
@@ -736,7 +750,7 @@ class EditorScreen(QWidget):
             if hasattr(self, 'zoom_combo'):
                 self.zoom_combo.setMinimumWidth(90)
             base = 42
-            for btn in [getattr(self, 'back_btn', None), getattr(self, 'save_btn', None), getattr(self, 'preview_btn', None), getattr(self, 'export_web_btn', None), getattr(self, 'export_html_btn', None)]:
+            for btn in [getattr(self, 'back_btn', None), getattr(self, 'save_btn', None), getattr(self, 'undo_btn', None), getattr(self, 'redo_btn', None), getattr(self, 'preview_btn', None), getattr(self, 'export_web_btn', None), getattr(self, 'export_html_btn', None)]:
                 if btn:
                     btn.setFixedHeight(base)
         except Exception:
@@ -771,6 +785,19 @@ class EditorScreen(QWidget):
 
     def _button_text(self, text: str | None) -> str:
         return strip_icon_text(text)
+
+    @staticmethod
+    def _tooltip_text(key: str, fallback_vi: str, fallback_en: str, lang: str) -> str:
+        try:
+            val = I18n.t(key, lang or "en")
+            if val and val != key:
+                return val
+        except Exception:
+            pass
+        try:
+            return fallback_vi if str(lang or "").lower().startswith("vi") else fallback_en
+        except Exception:
+            return fallback_en
 
     def _apply_header_icons(self, back_color: str):
         icon_px = 16
@@ -907,9 +934,51 @@ class EditorScreen(QWidget):
                 background-color: #0F9C5A;
                 color: #FFFFFF;
             }
+            QPushButton:pressed {
+                background-color: #0B7A46;
+                color: #FFFFFF;
+            }
         """)
         self.save_btn.clicked.connect(self.save_project)
         layout.addWidget(self.save_btn)
+
+        # Undo / redo (snapshot theo tac vu cau hoi trong ProjectManager)
+        self.undo_btn = QPushButton("↩")
+        self.redo_btn = QPushButton("↪")
+        for _btn, _tip_key, _tip_fb_vi, _tip_fb_en, _slot in (
+            (self.undo_btn, "editor.undo_tip", "Hoàn tác (Ctrl+Z)", "Undo (Ctrl+Z)", self.on_undo),
+            (self.redo_btn, "editor.redo_tip", "Làm lại (Ctrl+Y)", "Redo (Ctrl+Y)", self.on_redo),
+        ):
+            try:
+                _btn.setFixedWidth(44)
+                try:
+                    _tip = I18n.t(_tip_key, lang)
+                    if not _tip or _tip == _tip_key:
+                        raise ValueError("i18n-missing")
+                except Exception:
+                    _tip = _tip_fb_vi if str(lang).lower().startswith("vi") else _tip_fb_en
+                _btn.setToolTip(_tip)
+                try:
+                    self._apply_undo_button_theme(_btn)
+                except Exception:
+                    pass
+                _btn.clicked.connect(_slot)
+            except Exception:
+                pass
+            layout.addWidget(_btn)
+        try:
+            self._undo_shortcut = QShortcut(QKeySequence("Ctrl+Z"), self)
+            self._undo_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            self._undo_shortcut.activated.connect(self.on_undo)
+            self._redo_shortcut = QShortcut(QKeySequence("Ctrl+Y"), self)
+            self._redo_shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            self._redo_shortcut.activated.connect(self.on_redo)
+            self._redo_shortcut2 = QShortcut(QKeySequence("Ctrl+Shift+Z"), self)
+            self._redo_shortcut2.setContext(Qt.WidgetWithChildrenShortcut)
+            self._redo_shortcut2.activated.connect(self.on_redo)
+        except Exception:
+            pass
+        self._refresh_undo_buttons()
         
         # Preview button (open preview window on demand)
         try:
@@ -935,6 +1004,10 @@ class EditorScreen(QWidget):
                 background-color: #2563EB;
                 color: #FFFFFF;
             }
+            QPushButton:pressed {
+                background-color: #1D4ED8;
+                color: #FFFFFF;
+            }
         """)
         self.preview_btn.clicked.connect(self.open_preview_window)
         layout.addWidget(self.preview_btn)
@@ -952,7 +1025,7 @@ class EditorScreen(QWidget):
             self.export_web_btn.setIconSize(QSize(icon_px, icon_px))
         except Exception:
             pass
-        self.export_web_btn.setStyleSheet("QPushButton { background-color:#3B82F6; color:#fff; border:none; padding:8px 16px; border-radius:10px; font-weight:bold; } QPushButton:hover { background-color:#2563EB; color:#fff; }")
+        self.export_web_btn.setStyleSheet("QPushButton { background-color:#3B82F6; color:#fff; border:none; padding:8px 16px; border-radius:10px; font-weight:bold; } QPushButton:hover { background-color:#2563EB; color:#fff; } QPushButton:pressed { background-color:#1D4ED8; color:#fff; }")
         self.export_web_btn.clicked.connect(self.on_export_web)
         layout.addWidget(self.export_web_btn)
         try:
@@ -965,12 +1038,12 @@ class EditorScreen(QWidget):
             self.export_html_btn.setIconSize(QSize(icon_px, icon_px))
         except Exception:
             pass
-        self.export_html_btn.setStyleSheet("QPushButton { background-color:#F79009; color:#fff; border:none; padding:8px 16px; border-radius:10px; font-weight:bold; } QPushButton:hover { background-color:#E68008; color:#fff; }")
+        self.export_html_btn.setStyleSheet("QPushButton { background-color:#F79009; color:#fff; border:none; padding:8px 16px; border-radius:10px; font-weight:bold; } QPushButton:hover { background-color:#E68008; color:#fff; } QPushButton:pressed { background-color:#B54708; color:#fff; }")
         self.export_html_btn.clicked.connect(self.on_export_html)
         layout.addWidget(self.export_html_btn)
         try:
             base_h = 42
-            for btn in [self.back_btn, self.save_btn, self.preview_btn, self.export_web_btn, self.export_html_btn]:
+            for btn in [self.back_btn, self.save_btn, self.undo_btn, self.redo_btn, self.preview_btn, self.export_web_btn, self.export_html_btn]:
                 if not btn:
                     continue
                 btn.setMinimumHeight(base_h)
@@ -1063,12 +1136,26 @@ class EditorScreen(QWidget):
         except Exception:
             lang = "en"
         mapping = {
+            "saved": "editor.save_status.saved",
+            "saving": "editor.save_status.saving",
+            "error": "editor.save_status.error",
+            "dirty": "editor.save_status.dirty",
+        }
+        fallback = {
             "saved": ("Đã lưu", "Saved"),
             "saving": ("Đang lưu...", "Saving..."),
             "error": ("Lỗi lưu", "Save error"),
             "dirty": ("Chưa lưu", "Unsaved"),
         }
-        vi, en = mapping.get(str(key or "saved"), mapping["saved"])
+        i18n_key = mapping.get(str(key or "saved"), mapping["saved"])
+        try:
+            from eduplay.core.i18n import I18n
+            text = I18n.t(i18n_key, lang)
+            if text and text != i18n_key:
+                return text
+        except Exception:
+            pass
+        vi, en = fallback.get(str(key or "saved"), fallback["saved"])
         return vi if str(lang).lower().startswith("vi") else en
 
     def _update_save_status_label(self):
@@ -1180,6 +1267,15 @@ class EditorScreen(QWidget):
                 self.center_panel.game_config_updated.connect(self.on_game_config_changed)
         except Exception:
             pass
+
+        # Canh bao nhe tu panel (anh qua lon / bai qua nhieu cau) -> toast
+        try:
+            if hasattr(self.center_panel, 'notice'):
+                self.center_panel.notice.connect(
+                    lambda msg, _self=self: _self.show_toast(str(msg), kind="warning")
+                )
+        except Exception:
+            pass
         
         # Preview/export actions handled by bottom action bar
         
@@ -1212,12 +1308,29 @@ class EditorScreen(QWidget):
                 self.preview_btn.setEnabled(True)
         except Exception:
             pass
+        try:
+            self._refresh_undo_buttons()
+        except Exception:
+            pass
 
     def _apply_game_config_to_project(self, config: dict, persist: bool = True):
         if not self.current_project:
             return
         if not isinstance(config, dict):
             config = {}
+        try:
+            if self.project_manager and config:
+                import copy as _copy
+
+                cur = self.current_project or {}
+                self.project_manager.push_undo_snapshot({
+                    "questions": _copy.deepcopy(cur.get("questions", []) or []),
+                    "game_config": _copy.deepcopy(cur.get("game_config", {}) or {}),
+                    "name": str(cur.get("name") or ""),
+                    "description": str(cur.get("description") or ""),
+                })
+        except Exception:
+            pass
         merged_config = dict(self.current_project.get('game_config') or {})
         merged_config.update(config)
         self.current_project['game_config'] = merged_config
@@ -1352,6 +1465,7 @@ class EditorScreen(QWidget):
                 temp_out_file.unlink()
             except FileNotFoundError:
                 pass
+            # Preview mượt + có tiếng: bundle True nhưng file lớn >500KB dùng file:// thay vì base64
             ok = svc.export_to_html(
                 current_project,
                 str(preview_dir),
@@ -1363,6 +1477,37 @@ class EditorScreen(QWidget):
                 bundled = svc._bundle_media_files(current_project)
                 html = svc._generate_html_content(bundled)
                 temp_out_file.write_text(html, encoding="utf-8")
+            if temp_out_file.exists():
+                try:
+                    from eduplay.core.preview_utils import inject_preview_marker, inject_preview_audio_helper
+                except (ImportError, AttributeError) as e:
+                    print(f"[Preview] Import error: {e}")
+                    inject_preview_marker = None
+                    inject_preview_audio_helper = None
+                if callable(inject_preview_marker):
+                    try:
+                        preview_html = temp_out_file.read_text(encoding="utf-8")
+                        preview_html = inject_preview_marker(preview_html)
+                        temp_out_file.write_text(
+                            preview_html,
+                            encoding="utf-8",
+                        )
+                    except Exception as e:
+                        print(f"[Preview] Inject marker error: {e}")
+                        import traceback
+                        traceback.print_exc()
+                if callable(inject_preview_audio_helper):
+                    try:
+                        preview_html = temp_out_file.read_text(encoding="utf-8")
+                        preview_html = inject_preview_audio_helper(preview_html)
+                        temp_out_file.write_text(
+                            preview_html,
+                            encoding="utf-8",
+                        )
+                    except Exception as e:
+                        print(f"[Preview] Inject audio helper error: {e}")
+                        import traceback
+                        traceback.print_exc()
             if str(preview_mode or "").strip().lower() == "quick" and temp_out_file.exists():
                 try:
                     from eduplay.core.preview_utils import inject_quick_preview_autostart
@@ -1393,6 +1538,19 @@ class EditorScreen(QWidget):
 
     def open_preview_window(self, preview_mode: str = "full"):
         try:
+            import time as _time
+            # Debounce: ignore rapid double-click within 700 ms
+            now = _time.monotonic()
+            last = getattr(self, "_last_preview_ts", 0.0)
+            if now - float(last or 0) < 0.7:
+                return
+            self._last_preview_ts = now
+            # Fold any un-applied settings-tab state (e.g. music choice)
+            # so preview never plays a stale config.
+            try:
+                self._apply_pending_settings_to_project()
+            except Exception:
+                pass
             from PySide6.QtCore import QUrl, QTimer, QProcess
             from PySide6.QtWidgets import QApplication
             from eduplay.core.export_service import ExportService
@@ -1412,7 +1570,7 @@ class EditorScreen(QWidget):
                 import webview  # noqa: F401
             except Exception:
                 try:
-                    self.show_toast("Thiếu pywebview. Cài: pip install pywebview pythonnet PyQt5", kind="error")
+                    self.show_toast(I18n.t("editor.toast_missing_pywebview"), kind="error")
                 except Exception:
                     pass
                 return
@@ -1435,7 +1593,7 @@ class EditorScreen(QWidget):
                 else:
                     loading_msg = I18n.t('editor.loading_preview', lang) if I18n else ("Đang mở xem trước..." if lang == "vi" else "Opening preview...")
             except Exception:
-                loading_msg = "Đang mở xem nhanh..." if (lang == "vi" and preview_mode == "quick") else ("Opening quick preview..." if preview_mode == "quick" else ("Đang mở xem trước..." if lang == "vi" else "Opening preview..."))
+                loading_msg = I18n.t('toast.preview_loading', lang) if I18n else "Starting quick preview..."
 
             try:
                 self.show_toast(loading_msg, kind="info")
@@ -1453,6 +1611,29 @@ class EditorScreen(QWidget):
                 pass
 
             def _run():
+                # Define helpers early so they can be used before render
+                def _hide():
+                    try:
+                        if overlay_owner and hasattr(overlay_owner, "_hide_loading"):
+                            overlay_owner._hide_loading()
+                    except Exception:
+                        pass
+
+                def _failed(msg_key: str, details: str | None = None):
+                    _hide()
+                    try:
+                        msg = I18n.t(msg_key, lang) if I18n else ("Không thể mở xem trước." if lang == "vi" else "Could not open preview.")
+                    except Exception:
+                        msg = I18n.t('toast.preview_error', lang) if I18n else "Could not open preview."
+                    if details:
+                        d = str(details).strip()
+                        if d:
+                            msg = msg + "\n" + d
+                    try:
+                        self.show_toast(msg, kind="error")
+                    except Exception:
+                        pass
+
                 try:
                     current_project = copy.deepcopy(self.current_project or {})
                     if not current_project:
@@ -1462,7 +1643,7 @@ class EditorScreen(QWidget):
                         except Exception:
                             pass
                         try:
-                            self.show_toast("Chưa có dự án để xem trước.", kind="warning")
+                            self.show_toast(I18n.t("editor.toast_no_project_preview"), kind="warning")
                         except Exception:
                             pass
                         return
@@ -1487,7 +1668,7 @@ class EditorScreen(QWidget):
                         questions = current_project.get("questions", [])
                         if not isinstance(questions, list) or idx < 0 or idx >= len(questions):
                             try:
-                                self.show_toast("Hãy chọn một câu hỏi để xem nhanh." if lang == "vi" else "Select a question to quick preview.", kind="warning")
+                                self.show_toast(I18n.t("editor.toast_select_question_quick"), kind="warning")
                             except Exception:
                                 pass
                             _hide()
@@ -1500,6 +1681,18 @@ class EditorScreen(QWidget):
                                 lang,
                             )
                         current_project["questions"] = [self._normalize_question_media(selected_question)]
+                        # Quick preview: chỉ giữ game_type, bỏ heavy config để HTML từ 11MB→~1MB, đỡ lag 2-3fps
+                        try:
+                            _gc = current_project.get("game_config") or {}
+                            _gt = str(_gc.get("game_type") or current_project.get("game_type") or "")
+                            _mini = {"game_type": _gt}
+                            if "fishing" in _gt.lower():
+                                for _k in ("fish_objects", "fishing_settings"):
+                                    if _k in _gc:
+                                        _mini[_k] = _gc[_k]
+                            current_project["game_config"] = _mini
+                        except Exception:
+                            pass
 
                     proj_id = current_project.get('id') or 'EduPlay_Game'
                     preview_dir = PathResolver.resolve_preview_dir(proj_id)
@@ -1508,7 +1701,34 @@ class EditorScreen(QWidget):
                     safe = ''.join([c for c in name if c.isalnum() or c in (' ', '-', '_')]).strip().replace(' ', '_') or 'EduPlay_Game'
                     suffix = "_quick_preview" if preview_mode == "quick" else "_preview"
                     out_file = preview_dir / (safe + suffix + ".html")
-                    use_placeholder = EditorScreen._should_use_preview_placeholder(preview_mode)
+                    # Không dùng placeholder reload gây chớp — render xong mới mở cửa sổ, tận dụng CPU/RAM tối đa
+                    use_placeholder = False
+                    # Cache: if project hash unchanged and file exists < 30s, skip regeneration (big HTML)
+                    _preview_hash = ""
+                    try:
+                        import hashlib as _hl, json as _js
+                        _preview_hash = _hl.md5(_js.dumps(current_project, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest() + "|" + suffix
+                        _last_hash = getattr(self, "_last_preview_hash", "")
+                        _last_file = str(getattr(self, "_last_preview_file", ""))
+                        if _preview_hash and _preview_hash == _last_hash and str(out_file) == _last_file and out_file.exists():
+                            try:
+                                _age = _time.monotonic() - float(getattr(self, "_last_preview_mtime", 0) or 0)
+                            except Exception:
+                                _age = 999
+                            if _age < 30:
+                                # reuse file, skip render
+                                use_placeholder = False
+                                # mark to skip _render below
+                                _skip_render = True
+                            else:
+                                _skip_render = False
+                        else:
+                            _skip_render = False
+                        self._last_preview_hash = _preview_hash
+                        self._last_preview_file = str(out_file)
+                        self._last_preview_mtime = _time.monotonic()
+                    except Exception:
+                        _skip_render = False
 
                     title = current_project.get('name', 'EduPlay Preview')
                     if preview_mode == "quick":
@@ -1536,15 +1756,11 @@ class EditorScreen(QWidget):
                             except (NameError, FileNotFoundError):
                                 pass
 
-                    if use_placeholder:
-                        try:
-                            from eduplay.core.preview_utils import ensure_preview_placeholder_file
-                            ensure_preview_placeholder_file(out_file, title=title, lang=lang)
-                        except Exception:
-                            try:
-                                out_file.write_text("<html><body>Loading...</body></html>", encoding="utf-8")
-                            except Exception:
-                                pass
+                    # Luôn render HTML thật của game (cả quick và full). File:// không tự reload,
+                    # nên nếu chỉ ghi placeholder thì cửa sổ xem trước sẽ quay "Loading" mãi mãi.
+                    _do_skip = bool(locals().get("_skip_render", False))
+                    if _do_skip:
+                        pass
                     else:
                         try:
                             EditorScreen._render_preview_output_file(
@@ -1560,210 +1776,89 @@ class EditorScreen(QWidget):
 
                     uri = QUrl.fromLocalFile(str(out_file)).toString()
 
-                    def _hide():
-                        try:
-                            if overlay_owner and hasattr(overlay_owner, "_hide_loading"):
-                                overlay_owner._hide_loading()
-                        except Exception:
-                            pass
-
-                    def _failed(msg_key: str, details: str | None = None):
-                        _hide()
-                        try:
-                            msg = I18n.t(msg_key, lang) if I18n else ("Không thể mở xem trước." if lang == "vi" else "Could not open preview.")
-                        except Exception:
-                            msg = "Không thể mở xem trước." if lang == "vi" else "Could not open preview."
-                        if details:
-                            d = str(details).strip()
-                            if d:
-                                msg = msg + "\n" + d
-                        try:
-                            self.show_toast(msg, kind="error")
-                        except Exception:
-                            pass
+                    # _hide/_failed already defined at top of _run for early use
 
                     try:
-                        if getattr(self, "_preview_process", None) is not None:
+                        old_proc = getattr(self, "_preview_process", None)
+                        if old_proc is not None:
                             try:
-                                self._preview_process.kill()
+                                old_proc.kill()
                             except Exception:
                                 pass
+                            try:
+                                old_proc.waitForFinished(400)
+                            except Exception:
+                                pass
+                            try:
+                                old_proc.deleteLater()
+                            except Exception:
+                                pass
+                            self._preview_process = None
                     except Exception:
                         pass
 
                     proc = QProcess(self)
                     self._preview_process = proc  # Store reference immediately to prevent garbage collection
+
+                    _eduplay_studio_dir = str(Path(__file__).resolve().parents[3])
+                    _pr_script = os.path.join(_eduplay_studio_dir, "eduplay", "core", "preview_runner.py")
+                    # Nuitka exe sets neither sys.frozen nor sys.__compiled__,
+                    # so detect via shared helper (falls back to exe-name check).
                     try:
-                        from eduplay.core.preview_runner import (
-                            build_preview_process_command,
-                            get_current_process_executable,
-                            is_compiled_app,
-                            normalize_windows_path,
-                            resolve_frozen_preview_executable,
-                            resolve_frozen_preview_working_directory,
-                        )
-                        import os as _os
-                        # Nuitka does not always set sys.frozen, so detect the packaged
-                        # app via both sys.frozen and the Nuitka __compiled__ marker.
-                        is_frozen = is_compiled_app()
-                        if is_frozen:
-                            # GetModuleFileNameW always yields the real running .exe,
-                            # which sys.executable/sys.argv[0] may fail to provide.
-                            exe = resolve_frozen_preview_executable(
-                                executable=str(sys.executable or ""),
-                                argv0=str(sys.argv[0] if getattr(sys, "argv", None) else ""),
-                                cwd=str(_os.getcwd()),
-                                process_exe=get_current_process_executable(),
-                            )
-                            if not exe:
-                                _failed(
-                                    'editor.preview_failed',
-                                    "Không tìm thấy EduPlayStudio.exe để mở cửa sổ xem trước.",
-                                )
-                                return
-                            exe = normalize_windows_path(exe)
-                            program, arguments = build_preview_process_command(
-                                executable=str(exe),
-                                uri=uri,
-                                title=title,
-                                frozen=True,
-                            )
-                            proc.setProgram(program)
-                            proc.setArguments(arguments)
-                        else:
-                            exe = sys.executable
-                            bn = _os.path.basename(str(exe or "")).lower()
-                            if "python" not in bn:
-                                alt = None
-                                try:
-                                    p = Path(str(exe))
-                                    candidates = [
-                                        p.with_name("pythonw.exe"),
-                                        p.with_name("python.exe"),
-                                        p.with_name("py.exe"),
-                                    ]
-                                    for c in candidates:
-                                        if c.exists():
-                                            alt = str(c)
-                                            break
-                                except Exception:
-                                    alt = None
-                                alt = alt or shutil.which("pythonw") or shutil.which("python") or shutil.which("py")
-                                if alt:
-                                    exe = alt
-                                    program, arguments = build_preview_process_command(
-                                        executable=str(exe),
-                                        uri=uri,
-                                        title=title,
-                                        frozen=False,
-                                    )
-                                    proc.setProgram(program)
-                                    proc.setArguments(arguments)
-                                else:
-                                    _failed(
-                                        'editor.preview_failed',
-                                        "Không tìm thấy Python để mở cửa sổ xem trước. Hãy cài Python hoặc chạy EduPlay Studio bằng môi trường Python có pywebview.",
-                                    )
-                                    return
+                        from eduplay.core.preview_runner import is_compiled_app as _is_compiled_app
+                        _is_frozen = bool(_is_compiled_app())
+                    except Exception:
+                        _is_frozen = bool(getattr(sys, "frozen", False) or getattr(sys, "__compiled__", False))
+
+                    if _is_frozen:
+                        _exe = sys.executable
+                        _pr_arg = "--preview-runner"
+                        proc.setProgram(_exe)
+                        proc.setArguments([_pr_arg, uri, title])
+                    else:
+                        _exe = sys.executable
+                        _bn = os.path.basename(str(_exe or "")).lower()
+                        if "python" not in _bn:
+                            _alt = shutil.which("pythonw") or shutil.which("python") or shutil.which("py")
+                            if _alt:
+                                _exe = _alt
                             else:
-                                program, arguments = build_preview_process_command(
-                                    executable=str(exe),
-                                    uri=uri,
-                                    title=title,
-                                    frozen=False,
-                                )
-                                proc.setProgram(program)
-                                proc.setArguments(arguments)
-                    except Exception:
-                        try:
-                            from eduplay.core.preview_runner import (
-                                get_current_process_executable,
-                                is_compiled_app,
-                                normalize_windows_path,
-                                resolve_frozen_preview_executable,
-                            )
-                        except Exception:
-                            is_compiled_app = lambda: bool(getattr(sys, "frozen", False))
-                            get_current_process_executable = lambda: ""
-                            normalize_windows_path = lambda p: str(p or "")
-                            resolve_frozen_preview_executable = None
-                        if is_compiled_app() and resolve_frozen_preview_executable is not None:
-                            fallback_exe = resolve_frozen_preview_executable(
-                                executable=str(sys.executable or ""),
-                                argv0=str(sys.argv[0] if getattr(sys, "argv", None) else ""),
-                                cwd=str(os.getcwd()),
-                                process_exe=get_current_process_executable(),
-                            )
-                            if not fallback_exe:
                                 _failed(
                                     'editor.preview_failed',
-                                    "Không tìm thấy EduPlayStudio.exe để mở cửa sổ xem trước.",
+                                    "Không tìm thấy Python để mở cửa sổ xem trước.",
                                 )
                                 return
-                            proc.setProgram(normalize_windows_path(fallback_exe))
-                            proc.setArguments(["--preview-runner", uri, title])
+                        if os.path.isfile(_pr_script):
+                            proc.setProgram(_exe)
+                            proc.setArguments(["-u", _pr_script, uri, title])
                         else:
-                            proc.setProgram(sys.executable)
-                            proc.setArguments(["-u", "-m", "eduplay.core.preview_runner", uri, title])
-                    try:
-                        # Prefer the directory of the resolved executable so QProcess can
-                        # find adjacent DLLs/resources in the Nuitka standalone folder.
-                        program_path = normalize_windows_path(str(proc.program() or ""))
-                        runtime_dir = ""
+                            _failed(
+                                'editor.preview_failed',
+                                "Không tìm thấy preview_runner.py.",
+                            )
+                            return
+
+                    if _is_frozen:
                         try:
-                            candidate = Path(program_path).parent if program_path else None
-                            if candidate is not None and candidate.is_dir():
-                                runtime_dir = str(candidate)
+                            proc.setWorkingDirectory(os.path.dirname(os.path.abspath(sys.executable)))
                         except Exception:
-                            runtime_dir = ""
-                        if not runtime_dir:
-                            try:
-                                from eduplay.core.preview_runner import (
-                                    is_compiled_app as _is_compiled,
-                                    resolve_frozen_preview_working_directory,
-                                )
-                                if _is_compiled():
-                                    runtime_dir = resolve_frozen_preview_working_directory(
-                                        executable=program_path,
-                                        argv0=str(sys.argv[0] if getattr(sys, "argv", None) else ""),
-                                        cwd=str(os.getcwd()),
-                                    )
-                            except Exception:
-                                runtime_dir = ""
-                        if not runtime_dir and not getattr(sys, "frozen", False):
-                            try:
-                                runtime_dir = str(Path(__file__).resolve().parents[3])
-                            except Exception:
-                                runtime_dir = ""
-                        if not getattr(sys, "frozen", False) and not is_frozen:
-                            runtime_dir = ""
-                            try:
-                                runtime_dir = str(Path(__file__).resolve().parents[3])
-                            except Exception:
-                                runtime_dir = ""
-                        if runtime_dir and Path(runtime_dir).is_dir():
-                            proc.setWorkingDirectory(normalize_windows_path(runtime_dir))
-                    except Exception:
-                        pass
-                    if not getattr(sys, "frozen", False):
+                            pass
+                    elif os.path.isdir(_eduplay_studio_dir):
+                        proc.setWorkingDirectory(_eduplay_studio_dir)
+
+                    if not _is_frozen:
                         try:
                             from PySide6.QtCore import QProcessEnvironment
                             env = QProcessEnvironment.systemEnvironment()
-                            eduplay_root = ""
-                            try:
-                                eduplay_root = str(Path(__file__).resolve().parents[3])
-                            except Exception:
-                                pass
-                            if eduplay_root and Path(eduplay_root).is_dir():
-                                existing = env.value("PYTHONPATH") or ""
-                                sep = os.pathsep
-                                if existing:
-                                    env.insert("PYTHONPATH", eduplay_root + sep + existing)
-                                else:
-                                    env.insert("PYTHONPATH", eduplay_root)
-                                proc.setProcessEnvironment(env)
+                            existing = env.value("PYTHONPATH") or ""
+                            if existing:
+                                env.insert("PYTHONPATH", _eduplay_studio_dir + os.pathsep + existing)
+                            else:
+                                env.insert("PYTHONPATH", _eduplay_studio_dir)
+                            proc.setProcessEnvironment(env)
                         except Exception:
                             pass
+
                     try:
                         proc.setProcessChannelMode(QProcess.MergedChannels)
                     except Exception:
@@ -1788,7 +1883,8 @@ class EditorScreen(QWidget):
                         if "EDUPLAY_PREVIEW_READY" in buf["s"]:
                             _hide()
                             return
-                        if ("pywebview is required" in buf["s"]) or ("Failed to start preview window" in buf["s"]) or ("Backend" in buf["s"] and "failed" in buf["s"].lower()):
+                        low = buf["s"].lower()
+                        if ("pywebview" in low) or ("failed to start" in low) or ("no module named" in low) or ("traceback" in low) or ("backend" in low and "failed" in low):
                             tail = (buf.get("s") or "").strip()
                             tail = tail[-800:] if tail else ""
                             _failed('editor.preview_failed', tail)
@@ -1851,7 +1947,9 @@ class EditorScreen(QWidget):
                     # Process reference already stored at creation time
                     QTimer.singleShot(15000, _hide)
 
-                    if use_placeholder:
+                    # Đã render đồng bộ trước khi mở cửa sổ → không cần thread nền, tránh chớp
+                    _need_bg = False
+                    if _need_bg:
                         try:
                             import threading
 
@@ -1875,14 +1973,16 @@ class EditorScreen(QWidget):
                             t.start()
                         except Exception:
                             pass
-                except Exception:
+                except Exception as e_inner:
                     try:
+                        import traceback as _tb
+                        _tb.print_exc()
                         if overlay_owner and hasattr(overlay_owner, "_hide_loading"):
                             overlay_owner._hide_loading()
                     except Exception:
                         pass
                     try:
-                        self.show_toast("Không thể tạo xem trước.", kind="error")
+                        self.show_toast(I18n.t("editor.toast_cannot_create_preview") + " [" + str(e_inner)[:80] + "]", kind="error")
                     except Exception:
                         pass
 
@@ -1892,9 +1992,14 @@ class EditorScreen(QWidget):
                 _run()
             return
 
-        except Exception:
+        except Exception as outer_e:
             try:
-                self.show_toast("Không thể tạo xem trước.", kind="error")
+                import traceback as _tb
+                _tb.print_exc()
+            except Exception:
+                pass
+            try:
+                self.show_toast(I18n.t("editor.toast_cannot_create_preview") + " [" + str(outer_e)[:80] + "]", kind="error")
             except Exception:
                 pass
 
@@ -1907,7 +2012,7 @@ class EditorScreen(QWidget):
             eff = QGraphicsOpacityEffect(self.center_panel)
             self.center_panel.setGraphicsEffect(eff)
             anim_c = QPropertyAnimation(eff, b"opacity", self)
-            anim_c.setDuration(260)
+            anim_c.setDuration(_motion_ms(260))
             anim_c.setStartValue(0.0)
             anim_c.setEndValue(1.0)
             anim_c.setEasingCurve(QEasingCurve.OutCubic)
@@ -1918,29 +2023,103 @@ class EditorScreen(QWidget):
     
         
     def on_question_selected(self, question_data):
-        """Handle question selection from left panel"""
+        """Handle question selection from left panel - FIX: lấy index TRƯỚC khi resync để tránh nhảy sai (Q12->Q10 do list bị clear)"""
         if not self.current_project or not question_data:
             return
+        # LƯU index và qid TRƯỚC khi resync - FIX Q10->Q9 do currentRow chưa kịp cập nhật khi itemClicked
+        index = -1
+        qid = None
         try:
-            EditorScreen._rebalance_project_question_points(self)
-            EditorScreen._resync_editor_project_refs(self, reload_center=False)
-            if self.project_manager:
-                self.project_manager.save_project(self.current_project)
+            qid = str(question_data.get("id") or "").strip() if isinstance(question_data, dict) else ""
+        except Exception:
+            qid = None
+        # Ưu tiên tìm bằng id (chính xác nhất), không dùng currentRow vì itemClicked chưa cập nhật currentRow (cũ)
+        if qid:
+            try:
+                qs = self.current_project.get('questions', []) or []
+                for i, q in enumerate(qs):
+                    if isinstance(q, dict) and str(q.get("id") or "").strip() == qid:
+                        index = i
+                        break
+            except Exception:
+                pass
+        # fallback: thử currentRow (chỉ khi id không tìm thấy)
+        if not isinstance(index, int) or index < 0:
+            try:
+                if hasattr(self.left_panel, 'questions_list'):
+                    try:
+                        index = int(self.left_panel.questions_list.currentRow())
+                    except Exception:
+                        index = -1
+                    # nếu currentRow là hàng cũ (do click chưa cập nhật), kiểm tra xem question tại row đó có khớp qid không
+                    if isinstance(index, int) and 0 <= index < len(self.current_project.get('questions', []) or []):
+                        try:
+                            q_at_row = self.current_project['questions'][index]
+                            if isinstance(q_at_row, dict) and qid and str(q_at_row.get("id") or "").strip() != qid:
+                                # currentRow cũ không khớp, bỏ và tìm lại bằng brute force
+                                index = -1
+                                raise ValueError("mismatch")
+                        except Exception:
+                            pass
+                    if (not isinstance(index, int) or index < 0):
+                        try:
+                            qs = self.current_project.get('questions', []) or []
+                            for i, q in enumerate(qs):
+                                if q is question_data or q == question_data:
+                                    index = i
+                                    break
+                        except Exception:
+                            pass
+            except Exception:
+                index = -1
+        # KHÔNG rebalance/resync/save khi chỉ chọn - tránh clear list gây nhảy scroll và tô sai màu
+        # Chỉ khôi phục selection nếu list đã bị thay đổi ở nơi khác (không clear ở đây nên không cần)
+        # Đảm bảo highlight tím đúng: setCurrentRow nếu chưa đúng
+        try:
+            if hasattr(self.left_panel, 'questions_list') and isinstance(index, int) and 0 <= index < self.left_panel.questions_list.count():
+                # chỉ set nếu currentRow chưa đúng
+                try:
+                    cur = int(self.left_panel.questions_list.currentRow())
+                except Exception:
+                    cur = -1
+                if cur != index:
+                    try:
+                        self.left_panel.questions_list.blockSignals(True)
+                    except Exception:
+                        pass
+                    try:
+                        # bảo toàn scroll trước khi set
+                        try:
+                            vsb = self.left_panel.questions_list.verticalScrollBar()
+                            scroll_val = int(vsb.value()) if vsb else 0
+                        except Exception:
+                            scroll_val = 0
+                        self.left_panel.questions_list.setCurrentRow(index)
+                        # đảm bảo item được nhìn thấy mà không nhảy lên top
+                        try:
+                            self.left_panel.questions_list.scrollToItem(self.left_panel.questions_list.item(index))
+                            # khôi phục scroll nếu scrollToItem làm nhảy
+                            if vsb:
+                                vsb.setValue(scroll_val)
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+                    try:
+                        self.left_panel.questions_list.blockSignals(False)
+                    except Exception:
+                        pass
         except Exception:
             pass
-        index = -1
+        self.current_question_index = index if isinstance(index, int) and index >= 0 else -1
+        # Lấy lại question_data tươi từ current_project theo index để tránh dùng dict cũ stale
         try:
-            if hasattr(self.left_panel, 'questions_list'):
-                index = self.left_panel.questions_list.currentRow()
+            if isinstance(self.current_question_index, int) and 0 <= self.current_question_index < len(self.current_project.get('questions', []) or []):
+                fresh = self.current_project['questions'][self.current_question_index]
+                if isinstance(fresh, dict):
+                    question_data = fresh
         except Exception:
-            index = -1
-        if not isinstance(index, int) or index < 0:
-            questions = self.current_project.get('questions', [])
-            for i, q in enumerate(questions):
-                if q is question_data or q == question_data:
-                    index = i
-                    break
-        self.current_question_index = index if isinstance(index, int) else -1
+            pass
         self.center_panel.set_question(question_data, self.current_question_index)
 
     def _resolve_selected_question_request(self, payload=None):
@@ -2051,14 +2230,8 @@ class EditorScreen(QWidget):
         except Exception:
             message_template = "Bạn có chắc muốn xóa câu hỏi này?\n\n{question}" if str(lang).lower().startswith("vi") else "Are you sure you want to delete this question?\n\n{question}"
         message = message_template.format(question=preview_text or ("Câu hỏi đang chọn" if str(lang).lower().startswith("vi") else "Selected question"))
-        answer = QMessageBox.question(
-            self,
-            title,
-            message,
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
-        )
-        if answer != QMessageBox.Yes:
+        from eduplay.ui.widgets.confirm_dialog import ask_confirm
+        if not ask_confirm(self, title, message, lang):
             return
 
         self.on_question_updated(
@@ -2075,7 +2248,7 @@ class EditorScreen(QWidget):
         try:
             if not self.import_service:
                 try:
-                    self.show_toast("Import service is not available.", kind="warning")
+                    self.show_toast(I18n.t("editor.toast_import_service_unavailable"), kind="warning")
                 except Exception:
                     pass
                 return
@@ -2098,13 +2271,13 @@ class EditorScreen(QWidget):
                 questions = self.import_service.import_from_file(file_path)
             except Exception as e:
                 try:
-                    self.show_toast(f"Không thể nhập câu hỏi: {e}", kind="error")
+                    self.show_toast(I18n.t('toast.import_error', lang, error=str(e)) if I18n else f"Could not import questions: {e}", kind="error")
                 except Exception:
                     pass
                 return
             if not questions:
                 try:
-                    self.show_toast("Không tìm thấy câu hỏi hợp lệ trong tệp.", kind="warning")
+                    self.show_toast(I18n.t("editor.toast_no_valid_question_in_file"), kind="warning")
                 except Exception:
                     pass
                 return
@@ -2124,7 +2297,7 @@ class EditorScreen(QWidget):
 
             if not filtered:
                 try:
-                    self.show_toast("File nhập không có câu hỏi phù hợp với game hiện tại.", kind="warning")
+                    self.show_toast(I18n.t("editor.toast_import_file_not_match"), kind="warning")
                 except Exception:
                     pass
                 return
@@ -2141,16 +2314,41 @@ class EditorScreen(QWidget):
                 pass
 
             ok_any = False
+            dup_count = 0
+            try:
+                existing_qs = (self.current_project or {}).get("questions", []) or []
+            except Exception:
+                existing_qs = []
             for q in filtered:
                 try:
+                    is_dup = False
+                    try:
+                        if self.project_manager and hasattr(self.project_manager, "_is_duplicate_question"):
+                            is_dup = bool(self.project_manager._is_duplicate_question(q, existing_qs))
+                    except Exception:
+                        is_dup = False
+                    if is_dup:
+                        dup_count += 1
+                        continue
                     if self.project_manager and self.project_manager.add_question(q):
                         ok_any = True
+                        try:
+                            existing_qs = (self.project_manager.get_current_project() or {}).get("questions", []) or existing_qs
+                        except Exception:
+                            pass
                 except Exception:
                     pass
 
             if not ok_any:
                 try:
-                    self.show_toast("Nhập câu hỏi thất bại.", kind="error")
+                    if dup_count and dup_count >= len(filtered):
+                        try:
+                            lang_dup = SettingsManager().get_language() or 'vi'
+                        except Exception:
+                            lang_dup = 'vi'
+                        self.show_toast(I18n.t("editor.toast_import_all_duplicates", lang_dup), kind="warning")
+                    else:
+                        self.show_toast(I18n.t("editor.toast_import_failed"), kind="error")
                 except Exception:
                     pass
                 return
@@ -2168,7 +2366,11 @@ class EditorScreen(QWidget):
                 pass
             try:
                 if hasattr(self, 'show_toast'):
-                    self.show_toast(f"Đã nhập {len(filtered)} câu hỏi", kind="success")
+                    self.show_toast(I18n.t('toast.import_success', lang, count=len(filtered)) if I18n else f"Imported {len(filtered)} questions.", kind="success")
+            except Exception:
+                pass
+            try:
+                self._refresh_undo_buttons()
             except Exception:
                 pass
         except Exception:
@@ -2217,6 +2419,139 @@ class EditorScreen(QWidget):
         except Exception:
             pass
         
+    def _apply_undo_button_theme(self, btn=None):
+        """Style nut Undo/Redo theo theme dark/light hien tai."""
+        try:
+            theme = SettingsManager().get_theme() or "dark"
+        except Exception:
+            theme = "dark"
+        targets = []
+        try:
+            if btn is not None:
+                targets = [btn]
+            else:
+                targets = [getattr(self, "undo_btn", None), getattr(self, "redo_btn", None)]
+        except Exception:
+            targets = []
+        if str(theme).lower() == "light":
+            css = """
+                QPushButton {
+                    background-color: transparent;
+                    color: #475467;
+                    border: 1px solid #D0D5DD;
+                    border-radius: 10px;
+                    padding: 8px 0px;
+                    font-size: 16px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #F2F4F7;
+                    color: #101828;
+                }
+                QPushButton:pressed {
+                    background-color: #E4E7EC;
+                    color: #101828;
+                }
+                QPushButton:disabled {
+                    color: #C0C5CF;
+                    border-color: #E4E7EC;
+                }
+            """
+        else:
+            css = """
+                QPushButton {
+                    background-color: transparent;
+                    color: #A0AEC0;
+                    border: 1px solid #4A4E5A;
+                    border-radius: 10px;
+                    padding: 8px 0px;
+                    font-size: 16px;
+                    font-weight: bold;
+                }
+                QPushButton:hover {
+                    background-color: #3A3C47;
+                    color: #FFFFFF;
+                }
+                QPushButton:pressed {
+                    background-color: #2A2F3A;
+                    color: #FFFFFF;
+                }
+                QPushButton:disabled {
+                    color: #5A5E6A;
+                    border-color: #3A3C47;
+                }
+            """
+        for b in targets:
+            try:
+                if b is not None:
+                    b.setStyleSheet(css)
+            except Exception:
+                pass
+
+    def _refresh_undo_buttons(self):
+        """Cap nhat trang thai enabled cua nut Undo/Redo theo ProjectManager."""
+        try:
+            can_u = bool(self.project_manager and self.project_manager.can_undo())
+        except Exception:
+            can_u = False
+        try:
+            can_r = bool(self.project_manager and self.project_manager.can_redo())
+        except Exception:
+            can_r = False
+        for attr, state in (("undo_btn", can_u), ("redo_btn", can_r)):
+            try:
+                btn = getattr(self, attr, None)
+                if btn is not None:
+                    btn.setEnabled(bool(state))
+            except Exception:
+                pass
+
+    def _resync_after_undo_redo(self):
+        try:
+            self.current_project = self.project_manager.get_current_project() or self.current_project
+        except Exception:
+            pass
+        try:
+            EditorScreen._resync_editor_project_refs(self, reload_center=True)
+        except Exception:
+            pass
+        try:
+            self.left_panel.load_questions()
+        except Exception:
+            try:
+                self.left_panel.load_questions_silent()
+            except Exception:
+                pass
+        try:
+            self.center_panel.set_question(None, -1)
+        except Exception:
+            pass
+        try:
+            self.current_question_index = -1
+        except Exception:
+            pass
+        self._refresh_undo_buttons()
+
+    def on_undo(self):
+        """Hoan tac lan sua cau hoi gan nhat (nut + Ctrl+Z)."""
+        try:
+            if self.project_manager and self.project_manager.undo():
+                self._resync_after_undo_redo()
+                return
+        except Exception:
+            pass
+        self._refresh_undo_buttons()
+
+    def on_redo(self):
+        """Lam lai lan hoan tac gan nhat (nut + Ctrl+Y)."""
+        try:
+            if self.project_manager and self.project_manager.redo():
+                self._resync_after_undo_redo()
+                return
+        except Exception:
+            pass
+        self._refresh_undo_buttons()
+
     def on_question_updated(self, update_data):
         """Handle question updates from center panel"""
         if not self.current_project:
@@ -2232,6 +2567,11 @@ class EditorScreen(QWidget):
                 updated_question = self._normalize_question_media(updated_question)
                 questions = self.current_project.get('questions', [])
                 if self.current_question_index < len(questions):
+                    try:
+                        if self.project_manager:
+                            self.project_manager.push_undo_snapshot(questions)
+                    except Exception:
+                        pass
                     self.current_project['questions'][self.current_question_index] = updated_question
                     EditorScreen._rebalance_project_question_points(self)
                     EditorScreen._resync_editor_project_refs(self, reload_center=False)
@@ -2360,7 +2700,11 @@ class EditorScreen(QWidget):
                             break
                 except Exception:
                     pass
-                
+        try:
+            self._refresh_undo_buttons()
+        except Exception:
+            pass
+
     def _project_media_dir(self) -> Path | None:
         try:
             if not self.current_project:
@@ -2377,12 +2721,45 @@ class EditorScreen(QWidget):
     def _copy_file_to_project_media(self, source_path: str) -> str:
         if not source_path:
             return ""
-        src = Path(str(source_path))
+        raw = str(source_path).strip()
+        if raw.lower().startswith("data:"):
+            return raw
+        # Robust resolution: handles file://, %20, quotes, OneDrive/local swap, media/ relative
+        resolved = None
+        try:
+            # Try project media dir aware resolution
+            proj_dir = None
+            try:
+                if self.current_project and self.current_project.get("id"):
+                    proj_dir = PathResolver.resolve_projects_dir() / str(self.current_project.get("id"))
+            except Exception:
+                proj_dir = None
+            resolved = PathResolver.resolve_user_file(raw, project_dir=proj_dir)
+            if resolved is None:
+                norm = PathResolver.normalize_user_path(raw)
+                # Also try media/ relative fallback
+                if proj_dir is not None and norm and not os.path.isabs(norm):
+                    cand = proj_dir / norm
+                    if cand.exists():
+                        resolved = cand
+                    elif (proj_dir / "media" / Path(norm).name).exists():
+                        resolved = proj_dir / "media" / Path(norm).name
+                if resolved is None:
+                    p = Path(norm)
+                    if p.exists() and p.is_file():
+                        resolved = p
+        except Exception:
+            resolved = None
+        src = resolved if resolved is not None else Path(PathResolver.normalize_user_path(raw))
         if not src.exists() or not src.is_file():
-            return str(source_path)
+            # Keep original but normalized for display
+            try:
+                return PathResolver.normalize_user_path(raw)
+            except Exception:
+                return str(source_path)
         media_dir = self._project_media_dir()
         if media_dir is None:
-            return str(source_path)
+            return str(src)
         try:
             src_resolved = src.resolve()
             media_resolved = media_dir.resolve()
@@ -2404,12 +2781,61 @@ class EditorScreen(QWidget):
         if not isinstance(question_data, dict):
             return question_data
         image_path = str(question_data.get("image") or "").strip()
-        if image_path and os.path.exists(image_path):
+        if not image_path or image_path.lower().startswith("data:"):
+            return question_data
+        # Robust existence check via PathResolver (file://, %20, OneDrive, media/)
+        exists = False
+        try:
+            proj_dir = None
+            try:
+                if self.current_project and self.current_project.get("id"):
+                    proj_dir = PathResolver.resolve_projects_dir() / str(self.current_project.get("id"))
+            except Exception:
+                proj_dir = None
+            if PathResolver.resolve_user_file(image_path, project_dir=proj_dir) is not None:
+                exists = True
+            elif Path(PathResolver.normalize_user_path(image_path)).exists():
+                exists = True
+        except Exception:
+            try:
+                exists = os.path.exists(image_path) or Path(image_path).exists()
+            except Exception:
+                exists = False
+        if exists:
             try:
                 question_data["image"] = self._copy_file_to_project_media(image_path)
             except Exception:
                 pass
         return question_data
+
+    def _apply_pending_settings_to_project(self):
+        """Fold the visible settings-tab state into the project config.
+
+        Users often change the music combo (or other settings) and hit
+        Preview/Export/Save directly without pressing Apply first. Without
+        this, preview and export silently use the stale saved config
+        (e.g. background 1 even though background 2 is selected).
+        Reuses the exact same applier as the Apply button, full field set.
+        """
+        try:
+            left = getattr(self, "left_panel", None)
+            if left is None:
+                return
+            builder = getattr(left, "_build_settings_payload", None)
+            if not callable(builder):
+                return
+            try:
+                payload = builder()
+            except Exception:
+                return
+            if not isinstance(payload, dict):
+                return
+            try:
+                self.on_question_settings_applied(dict(payload))
+            except Exception:
+                pass
+        except Exception:
+            pass
 
     def on_question_settings_applied(self, settings: dict):
         if not self.current_project or not isinstance(settings, dict):
@@ -2469,7 +2895,17 @@ class EditorScreen(QWidget):
                 bgm_path = builtin_1
                 if mode == "custom":
                     custom_src = str(settings.get("custom_music_path") or "").strip()
-                    if custom_src and os.path.exists(custom_src):
+                    _custom_exists = False
+                    try:
+                        if custom_src and not custom_src.lower().startswith("data:"):
+                            if PathResolver.resolve_user_file(custom_src) is not None or Path(PathResolver.normalize_user_path(custom_src)).exists():
+                                _custom_exists = True
+                    except Exception:
+                        try:
+                            _custom_exists = os.path.exists(custom_src)
+                        except Exception:
+                            _custom_exists = False
+                    if custom_src and _custom_exists:
                         bgm_path = self._copy_file_to_project_media(custom_src)
                     else:
                         bgm_path = cfg.get("background_music", builtin_1) or builtin_1
@@ -2527,7 +2963,7 @@ class EditorScreen(QWidget):
         except Exception:
             pass
         try:
-            self.show_toast("Đã áp dụng cài đặt cho toàn bộ câu hỏi", kind="success")
+            self.show_toast(I18n.t("editor.toast_applied_settings_all"), kind="success")
         except Exception:
             pass
 
@@ -2557,17 +2993,21 @@ class EditorScreen(QWidget):
             self._set_save_status("saved")
 
     def on_export_web(self):
+        self._apply_pending_settings_to_project()
         self.publish_requested.emit()
 
     def on_export_html(self):
         """Handle HTML export request"""
+        self._apply_pending_settings_to_project()
         self.export_requested.emit('html')
         
     def on_export_native(self):
         """Handle native export request"""
+        self._apply_pending_settings_to_project()
         self.export_requested.emit('native')
 
     def on_export_exe(self):
+        self._apply_pending_settings_to_project()
         self.export_requested.emit('exe')
 
     def on_game_config_changed(self, config: dict):
@@ -2585,6 +3025,13 @@ class EditorScreen(QWidget):
             self.export_html_btn.setText(self._button_text(I18n.t('editor.export_html_internal', l)))
             if hasattr(self, "import_btn") and self.import_btn:
                 self.import_btn.setText(self._button_text(I18n.t('editor.import', l)))
+            try:
+                if hasattr(self, "undo_btn") and self.undo_btn:
+                    self.undo_btn.setToolTip(self._tooltip_text('editor.undo_tip', "Hoàn tác (Ctrl+Z)", "Undo (Ctrl+Z)", l))
+                if hasattr(self, "redo_btn") and self.redo_btn:
+                    self.redo_btn.setToolTip(self._tooltip_text('editor.redo_tip', "Làm lại (Ctrl+Y)", "Redo (Ctrl+Y)", l))
+            except Exception:
+                pass
         except Exception:
             pass
         try:
@@ -2596,6 +3043,10 @@ class EditorScreen(QWidget):
         
     def save_project(self, silent: bool = False, autosave: bool = False):
         """Save the current project"""
+        try:
+            self._apply_pending_settings_to_project()
+        except Exception:
+            pass
         if autosave:
             self._set_save_status("saving")
         if self.current_project:
@@ -2627,6 +3078,11 @@ class EditorScreen(QWidget):
                                         if k in questions[idx] and k not in qd:
                                             qd[k] = questions[idx][k]
                                 qd = self._normalize_question_media(qd)
+                                try:
+                                    if self.project_manager:
+                                        self.project_manager.push_undo_snapshot(questions)
+                                except Exception:
+                                    pass
                                 self.current_project["questions"][idx] = qd
                     except Exception:
                         pass
@@ -2664,6 +3120,10 @@ class EditorScreen(QWidget):
                         msg = "Đã lưu dự án"
                     if not silent:
                         self.show_toast(msg, kind="success")
+                except Exception:
+                    pass
+                try:
+                    self._refresh_undo_buttons()
                 except Exception:
                     pass
                 return True

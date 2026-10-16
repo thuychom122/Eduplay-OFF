@@ -14,7 +14,12 @@ pytesseract>=0.3.10
 firebase_admin>=5.3.0
 pywin32>=306
 pywebview>=4.0
+pythonnet>=3.0.0
 watchdog>=3.0.0
 hypothesis>=6.0.0
+SpeechRecognition>=3.10.0
+pyaudio>=0.2.13
+sounddevice>=0.4.6
+numpy>=1.26.0
 
 

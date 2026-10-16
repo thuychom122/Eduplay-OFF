@@ -15,6 +15,487 @@
 
     <!--endbuild-->
 
+    <style id="eduQuestionImageCss">
+        #questionImageWrap {
+            display: none;
+            margin: 14px auto 6px;
+            max-width: 720px;
+            width: 92%;
+            border-radius: 14px;
+            overflow: hidden;
+            background: #ffffff;
+            border: 2px solid rgba(227, 171, 40, 0.85);
+            box-shadow: 0 16px 40px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(255,255,255,0.15) inset;
+            position: relative;
+        }
+        #questionImageWrap::after {
+            content: "🔍 Nhấn để phóng to";
+            position: absolute;
+            right: 8px;
+            bottom: 8px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.02em;
+            background: rgba(15, 23, 42, 0.88);
+            color: #FDE68A;
+            padding: 4px 8px;
+            border-radius: 999px;
+            pointer-events: none;
+            opacity: 0.92;
+        }
+        #questionImageWrap img {
+            display: block;
+            width: 100%;
+            max-height: 52vh;
+            min-height: 180px;
+            height: auto;
+            margin: 0 auto;
+            object-fit: contain;
+            padding: 10px;
+            box-sizing: border-box;
+            background: #fff;
+            cursor: zoom-in;
+            transition: transform 0.22s ease;
+        }
+        #questionImageWrap:hover img {
+            transform: scale(1.012);
+        }
+        #questionImageWrap.has-image {
+            display: block;
+            animation: qImgIn 0.35s ease-out;
+        }
+        @keyframes qImgIn { from { opacity: 0; transform: translateY(6px) scale(0.98); } to { opacity: 1; transform: translateY(0) scale(1); } }
+        /* ===== FIX: Ảnh nằm GIỮA câu hỏi và cụm đáp án, không đè lên đáp án ===== */
+        /* ===== FIX: menu dài (notice + logo + nút) luôn cuộn được, không tràn ===== */
+        /* Chừa dư đáy để footer cố định không che nút cuối (không sửa footer) */
+        #mainMenu{
+            overflow-y: auto !important;
+            max-height: 100vh !important;
+            padding-bottom: 120px !important;
+            box-sizing: border-box !important;
+            -webkit-overflow-scrolling: touch;
+        }
+        /* ===== FIX scrollbar: luôn cuộn trên #gameWindow, không đổi sang body ===== */
+        html, body {
+            height: 100% !important;
+            min-height: 100vh !important;
+            overflow: hidden !important;
+            background: #000 !important;
+        }
+        #gameWindow {
+            position: fixed !important;
+            top: 0 !important;
+            left: 0 !important;
+            width: 100% !important;
+            height: 100vh !important;
+            box-sizing: border-box !important;
+            overflow-y: auto !important;
+            overflow-x: hidden !important;
+            background-position: center center !important;
+            background-attachment: fixed !important;
+            background-size: cover !important;
+            background-repeat: no-repeat !important;
+            padding-bottom: 75px !important;
+            scrollbar-width: thin;
+            scrollbar-color: #E3AB28 rgba(2,6,23,0.65);
+            -webkit-overflow-scrolling: touch;
+        }
+        #gameWindow::-webkit-scrollbar {
+            width: 12px;
+        }
+        #gameWindow::-webkit-scrollbar-track {
+            background: rgba(2,6,23,0.65);
+            border-left: 1px solid rgba(227,171,40,0.65);
+        }
+        #gameWindow::-webkit-scrollbar-thumb {
+            background: linear-gradient(180deg, #E3AB28 0%, #c78d1a 100%);
+            border-radius: 999px;
+            border: 2px solid rgba(2,6,23,0.85);
+        }
+        #gameWindow::-webkit-scrollbar-thumb:hover {
+            background: #f0c040;
+        }
+        /* Đưa vòng TIME lên cao hơn chút để bớt trống trên, vẫn trên câu hỏi */
+        .timer { top: calc(18% + 95px) !important; }
+        @media (max-width: 768px) {
+            .timer { top: calc(15% + 70px) !important; }
+        }
+        /* Hieu ung vang goc WWBM - chi trong nut */
+        .answerCheck {
+            background: url("images/blockHover.png") no-repeat center center !important;
+            background-size: 100% 100% !important;
+            border: none !important;
+            box-shadow: none !important;
+            filter: none !important;
+        }
+        /* Khung giai thich rong bang cum dap an / hinh anh / cau hoi (720px) */
+        #explanationBlock {
+            width: 100% !important;
+            max-width: 720px !important;
+        }
+        #explanationBox {
+            width: 100% !important;
+            max-width: 100% !important;
+        }
+        /* Giu scroll tren #gameWindow de hinh nen va cac thanh phan co dinh dung yen, chi cum cau hoi cuon */
+        #gameWindow.has-question-image,
+        body.has-question-image #gameWindow,
+        body:has(#questionImageWrap.has-image) #gameWindow {
+            height: 100vh !important;
+            min-height: 100vh !important;
+            padding-bottom: 75px !important;
+            overflow-y: auto !important;
+            overflow-x: hidden !important;
+            overflow: auto !important;
+        }
+        body:has(#questionImageWrap.has-image),
+        body.has-question-image {
+            overflow: hidden !important;
+            height: 100% !important;
+        }
+        footer {
+            position: fixed !important;
+            bottom: 0 !important;
+            left: 0 !important;
+            right: 0 !important;
+            z-index: 1000 !important;
+            transition: transform 0.35s ease, opacity 0.35s ease !important;
+        }
+        footer.footer-hidden {
+            transform: translateY(100%) !important;
+            opacity: 0 !important;
+            pointer-events: none !important;
+        }
+        /* Cho phep #gameWindow co du khong de keo cum dap an len qua footer */
+        #gameWindow.footer-hidden-pad {
+            padding-bottom: 75px !important;
+        }
+        /* Lớp bọc nguyên cụm — luôn xích lên đến CHÂN vòng TIME, cả khi có và không có ảnh */
+        #eduQaCluster {
+            display: flex !important;
+            flex-direction: column !important;
+            align-items: center !important;
+            gap: 12px !important;
+            position: relative !important;
+            width: 994px !important;
+            max-width: 92vw !important;
+            margin: calc(14vh + 290px) auto 0 !important;
+            padding-bottom: 40px !important;
+            background: transparent !important;
+        }
+        #eduQaCluster #questionBlock {
+            position: relative !important;
+            top: auto !important;
+            left: auto !important;
+            right: auto !important;
+            bottom: auto !important;
+            transform: none !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            height: 78px !important;
+            margin: 0 auto !important;
+            overflow: visible !important;
+        }
+        #eduQaCluster #answerBlock {
+            position: relative !important;
+            top: auto !important;
+            left: auto !important;
+            right: auto !important;
+            bottom: auto !important;
+            transform: none !important;
+            width: 100% !important;
+            max-width: 720px !important;
+            margin: 0 auto !important;
+            display: flex !important;
+            flex-wrap: wrap !important;
+            justify-content: center !important;
+            gap: 10px !important;
+            padding: 0 10px 20px !important;
+        }
+        #eduQaCluster .answerOne,
+        #eduQaCluster .answerTwo,
+        #eduQaCluster .answerThree,
+        #eduQaCluster .answerFour {
+            position: relative !important;
+            top: auto !important;
+            left: auto !important;
+            right: auto !important;
+            bottom: auto !important;
+            margin: 0 !important;
+            width: 349px !important;
+            max-width: 48% !important;
+            height: 42px !important;
+            flex: 0 1 349px !important;
+        }
+        #eduQaCluster .questionBox { overflow: visible !important; }
+        /* Khi có ảnh vẫn giữ cụm ở cùng vị trí chân vòng, chỉ thêm ảnh giữa */
+        #gameWindow.has-question-image #eduQaCluster,
+        body.has-question-image #eduQaCluster,
+        body:has(#questionImageWrap.has-image) #eduQaCluster {
+            margin: calc(14vh + 290px) auto 0 !important;
+        }
+        /* ===== DESKTOP (>=769px): flow dọc — câu hỏi -> ảnh -> đáp án ===== */
+        @media (min-width: 769px) {
+            #eduQaCluster { margin: calc(14vh + 290px) auto 0 !important; }
+            #gameWindow.has-question-image #eduQaCluster,
+            body.has-question-image #eduQaCluster { margin: calc(14vh + 290px) auto 0 !important; }
+            #gameWindow.has-question-image #questionBlock,
+            body.has-question-image #questionBlock,
+            #questionBlock:has(#questionImageWrap.has-image) {
+                position: relative !important;
+                top: auto !important;
+                left: auto !important;
+                right: auto !important;
+                bottom: auto !important;
+                transform: none !important;
+                width: 100% !important;
+                max-width: 100% !important;
+                height: 78px !important;
+                margin: 0 auto !important;
+                margin-left: auto !important;
+                margin-right: auto !important;
+                overflow: visible !important;
+            }
+            #gameWindow.has-question-image .questionBox,
+            body.has-question-image .questionBox,
+            #questionBlock:has(#questionImageWrap.has-image) .questionBox {
+                overflow: visible !important;
+            }
+            /* Ảnh là sibling giữa questionBlock và answerBlock — nằm giữa, không đè */
+            #gameWindow.has-question-image #questionImageWrap,
+            body.has-question-image #questionImageWrap {
+                position: relative !important;
+                top: auto !important;
+                bottom: auto !important;
+                left: auto !important;
+                right: auto !important;
+                transform: none !important;
+                margin: 0 auto 14px !important;
+                width: min(680px, 88vw) !important;
+                max-width: 88vw !important;
+                z-index: 5 !important;
+                display: block !important;
+            }
+            /* Fallback nếu ảnh vẫn nằm trong questionBox (chưa kịp move): đặt ngay dưới đáy questionBlock 12px */
+            #questionBlock:has(#questionImageWrap.has-image) #questionImageWrap {
+                position: absolute !important;
+                top: calc(100% + 12px) !important;
+                left: 50% !important;
+                transform: translateX(-50%) !important;
+                margin: 0 !important;
+                width: min(680px, 88vw) !important;
+                max-width: 88vw !important;
+                z-index: 5 !important;
+            }
+            #gameWindow.has-question-image #questionImageWrap img,
+            body.has-question-image #questionImageWrap img,
+            #questionBlock:has(#questionImageWrap.has-image) #questionImageWrap img {
+                max-height: 28vh !important;
+                min-height: 140px !important;
+                max-width: 100% !important;
+            }
+            /* Đáp án: bỏ absolute top vh, chuyển sang flex nằm dưới ảnh 14px */
+            #gameWindow.has-question-image #answerBlock,
+            body.has-question-image #answerBlock {
+                position: relative !important;
+                top: auto !important;
+                left: auto !important;
+                right: auto !important;
+                bottom: auto !important;
+                transform: none !important;
+                width: 100% !important;
+                max-width: 720px !important;
+                margin: 0 auto !important;
+                display: flex !important;
+                flex-wrap: wrap !important;
+                justify-content: center !important;
+                gap: 10px !important;
+                padding: 0 10px 20px !important;
+            }
+            #gameWindow.has-question-image .answerOne,
+            #gameWindow.has-question-image .answerTwo,
+            #gameWindow.has-question-image .answerThree,
+            #gameWindow.has-question-image .answerFour,
+            body.has-question-image .answerOne,
+            body.has-question-image .answerTwo,
+            body.has-question-image .answerThree,
+            body.has-question-image .answerFour {
+                position: relative !important;
+                top: auto !important;
+                left: auto !important;
+                right: auto !important;
+                bottom: auto !important;
+                margin: 0 !important;
+                width: 349px !important;
+                max-width: 48% !important;
+                height: 42px !important;
+                flex: 0 1 349px !important;
+            }
+            #gameWindow.has-question-image .explanationBlock,
+            body.has-question-image .explanationBlock {
+                position: relative !important;
+                top: auto !important;
+                left: 50% !important;
+                transform: translateX(-50%) !important;
+                margin: 10px auto 0 !important;
+                width: 100% !important;
+                max-width: 720px !important;
+            }
+        }
+        /* ===== MOBILE (<=768px): cụm sát chân vòng TIME cho cả có/không ảnh ===== */
+        @media (max-width: 768px) {
+            #eduQaCluster { margin: 320px auto 0 !important; width: 90% !important; max-width: 90vw !important; gap: 10px !important; }
+            #eduQaCluster #questionBlock {
+                position: relative !important;
+                top: auto !important;
+                left: auto !important;
+                transform: none !important;
+                width: 100% !important;
+                max-width: 100% !important;
+                margin: 0 auto !important;
+                height: auto !important;
+                min-height: 90px !important;
+                overflow: visible !important;
+            }
+            #eduQaCluster #answerBlock {
+                position: relative !important;
+                top: auto !important;
+                left: auto !important;
+                right: auto !important;
+                bottom: auto !important;
+                transform: none !important;
+                width: 96% !important;
+                max-width: 96vw !important;
+                margin: 0 auto !important;
+                display: flex !important;
+                flex-direction: column !important;
+                align-items: center !important;
+                gap: 8px !important;
+                padding-bottom: 20px !important;
+            }
+            #eduQaCluster .answerOne,
+            #eduQaCluster .answerTwo,
+            #eduQaCluster .answerThree,
+            #eduQaCluster .answerFour {
+                position: relative !important;
+                top: auto !important;
+                left: auto !important;
+                right: auto !important;
+                bottom: auto !important;
+                margin: 0 !important;
+                width: 90% !important;
+                max-width: 400px !important;
+            }
+            #gameWindow.has-question-image #eduQaCluster,
+            body.has-question-image #eduQaCluster { margin: 320px auto 0 !important; width: 90% !important; max-width: 90vw !important; gap: 10px !important; }
+            #gameWindow.has-question-image #questionBlock,
+            body.has-question-image #questionBlock {
+                position: relative !important;
+                top: auto !important;
+                left: auto !important;
+                transform: none !important;
+                width: 100% !important;
+                max-width: 100% !important;
+                margin: 0 auto !important;
+                height: auto !important;
+                min-height: 90px !important;
+                overflow: visible !important;
+            }
+            #gameWindow.has-question-image #questionImageWrap,
+            body.has-question-image #questionImageWrap {
+                position: relative !important;
+                top: auto !important;
+                left: auto !important;
+                transform: none !important;
+                margin: 0 auto 10px !important;
+                width: 96% !important;
+                max-width: 96vw !important;
+            }
+            #questionBlock:has(#questionImageWrap.has-image) #questionImageWrap {
+                position: relative !important;
+                top: auto !important;
+                left: auto !important;
+                transform: none !important;
+                margin: 10px auto 10px !important;
+                width: 96% !important;
+                max-width: 96vw !important;
+            }
+            #gameWindow.has-question-image #questionImageWrap img,
+            body.has-question-image #questionImageWrap img {
+                max-height: 36vh !important;
+                min-height: 140px !important;
+            }
+            #gameWindow.has-question-image #answerBlock,
+            body.has-question-image #answerBlock {
+                position: relative !important;
+                top: auto !important;
+                left: auto !important;
+                right: auto !important;
+                bottom: auto !important;
+                transform: none !important;
+                width: 96% !important;
+                max-width: 96vw !important;
+                margin: 0 auto !important;
+                display: flex !important;
+                flex-direction: column !important;
+                align-items: center !important;
+                gap: 8px !important;
+                padding-bottom: 20px !important;
+            }
+            #gameWindow.has-question-image .answerOne,
+            #gameWindow.has-question-image .answerTwo,
+            #gameWindow.has-question-image .answerThree,
+            #gameWindow.has-question-image .answerFour,
+            body.has-question-image .answerOne,
+            body.has-question-image .answerTwo,
+            body.has-question-image .answerThree,
+            body.has-question-image .answerFour {
+                position: relative !important;
+                top: auto !important;
+                left: auto !important;
+                right: auto !important;
+                bottom: auto !important;
+                margin: 0 !important;
+                width: 90% !important;
+                max-width: 400px !important;
+            }
+        }
+        /* Lightbox */
+        #eduImageLightbox {
+            display: none;
+            position: fixed;
+            inset: 0;
+            z-index: 9999;
+            background: rgba(2, 6, 23, 0.92);
+            align-items: center;
+            justify-content: center;
+            padding: 24px;
+            cursor: zoom-out;
+        }
+        #eduImageLightbox.open { display: flex; }
+        #eduImageLightbox img {
+            max-width: 96vw;
+            max-height: 92vh;
+            object-fit: contain;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.6);
+            background: #fff;
+            padding: 8px;
+        }
+        #eduImageLightbox .close-hint {
+            position: absolute;
+            top: 14px;
+            right: 16px;
+            color: #FDE68A;
+            font-size: 13px;
+            font-weight: 700;
+            background: rgba(255,255,255,0.12);
+            padding: 6px 12px;
+            border-radius: 999px;
+            border: 1px solid rgba(253, 230, 138, 0.35);
+        }
+    </style>
+
 </head>
 
 
@@ -326,9 +807,11 @@
             </div>
         </div>
 
+        <div id="eduQaCluster">
         <div id="questionBlock">
             <div class="questionBox" id="questionBox">
                 <div id="question"></div>
+                <div id="questionImageWrap"><img id="questionImage" alt=""></div>
             </div>
         </div>
 
@@ -363,10 +846,136 @@
             </div>
 
         </div>
+        </div>
 
 
     </section>
 
+
+    <div id="eduImageLightbox" aria-hidden="true"><span class="close-hint">✕ Nhấn để đóng — ESC</span><img id="eduLightboxImg" alt="Phóng to hình câu hỏi"></div>
+    <script>
+      (function(){
+        function closeLb(){ var lb=document.getElementById('eduImageLightbox'); if(lb) lb.classList.remove('open'); }
+        document.addEventListener('click', function(e){
+          var lb=document.getElementById('eduImageLightbox');
+          if(!lb || !lb.classList.contains('open')) return;
+          if(e.target.id==='eduImageLightbox' || e.target.classList.contains('close-hint')) closeLb();
+        });
+        document.addEventListener('click', function(e){
+          if(e.target.id==='eduLightboxImg') closeLb();
+        });
+        document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeLb(); });
+        // also bind questionImage click via delegation (for dynamically set src)
+        document.addEventListener('click', function(e){
+          var t=e.target;
+          if(t && t.id==='questionImage' && t.getAttribute('src')){
+            var lb=document.getElementById('eduImageLightbox');
+            var lbImg=document.getElementById('eduLightboxImg');
+            if(lb && lbImg && t.src){ lbImg.src=t.src; lb.classList.add('open'); e.preventDefault(); }
+          }
+        });
+        // Fallback observer: ensure parent has-question-image class even if app.js fails or :has not supported
+        (function(){
+          function syncHas(){
+            try{
+              var wrap=document.getElementById('questionImageWrap');
+              var gw=document.getElementById('gameWindow');
+              var bd=document.body;
+              var qb=document.getElementById('questionBlock');
+              var ab=document.getElementById('answerBlock');
+              var has=wrap && wrap.classList.contains('has-image') && wrap.style.display!=='none';
+              // also check if img has src
+              var img=document.getElementById('questionImage');
+              if(img && img.getAttribute('src')) has=true;
+              if(has){
+                if(gw) gw.classList.add('has-question-image');
+                if(bd) bd.classList.add('has-question-image');
+                // ensure image is between question and answers inside cluster (cách vòng TIME)
+                try{
+                  var cluster=document.getElementById('eduQaCluster');
+                  var targetParent = cluster || gw;
+                  // cần wrap nằm giữa qb và ab bên trong cluster
+                  if(wrap && qb && ab && wrap.parentElement !== targetParent){
+                    if(wrap.parentElement) wrap.parentElement.removeChild(wrap);
+                    // qb và ab giờ nằm trong cluster, nên insert trước ab
+                    if(qb.parentNode) qb.parentNode.insertBefore(wrap, ab);
+                    else targetParent.insertBefore(wrap, ab);
+                  } else if(wrap && qb && ab && targetParent && wrap.nextElementSibling !== ab){
+                    // đã cùng parent nhưng sai thứ tự -> chỉnh lại
+                    if(qb.parentNode) qb.parentNode.insertBefore(wrap, ab);
+                  }
+                }catch(e){}
+              } else {
+                if(gw) gw.classList.remove('has-question-image');
+                if(bd) bd.classList.remove('has-question-image');
+                // move back inside questionBox when no image
+                try{
+                  var qbox=document.getElementById('questionBox');
+                  if(wrap && qbox && wrap.parentElement !== qbox){
+                    if(wrap.parentElement) wrap.parentElement.removeChild(wrap);
+                    qbox.appendChild(wrap);
+                  }
+                }catch(e){}
+              }
+            }catch(e){}
+          }
+          try{
+            var wrap=document.getElementById('questionImageWrap');
+            if(wrap){
+              var obs=new MutationObserver(syncHas);
+              obs.observe(wrap, {attributes:true, attributeFilter:['class','style']});
+              var img=document.getElementById('questionImage');
+              if(img) obs.observe(img, {attributes:true, attributeFilter:['src']});
+            }
+          }catch(e){}
+          document.addEventListener('DOMContentLoaded', syncHas);
+          setInterval(syncHas, 400);
+          // also run after loadQuestion is called
+          var _origLoad=window.loadQuestion;
+          if(typeof _origLoad==='function'){
+            window.loadQuestion=function(q){ var r=_origLoad.apply(this, arguments); setTimeout(syncHas, 30); return r; };
+          }
+        })();
+      })();
+    </script>
+    <script>
+      // Cho phep cum dap an keo len qua footer co dinh: tu dong an footer khi cuon (ho tro ca body scroll)
+      // (mo rong: ca menu chinh #mainMenu co cuon rieng)
+      (function(){
+        var gw=document.getElementById('gameWindow');
+        var mm=document.getElementById('mainMenu');
+        var footer=document.querySelector('footer');
+        if(!footer) return;
+        var ticking=false;
+        function getScrollTop(){
+          try{
+            if(window.pageYOffset>0) return window.pageYOffset;
+            if(document.documentElement && document.documentElement.scrollTop) return document.documentElement.scrollTop;
+            if(gw && gw.scrollTop) return gw.scrollTop;
+            if(mm && mm.scrollTop) return mm.scrollTop;
+            return 0;
+          }catch(e){ return 0; }
+        }
+        function update(){
+          try{
+            var st = getScrollTop();
+            if(st>20){
+              footer.classList.add('footer-hidden');
+            } else {
+              footer.classList.remove('footer-hidden');
+            }
+          }catch(e){}
+          ticking=false;
+        }
+        try{ window.addEventListener('scroll', function(){ if(!ticking){ try{ window.requestAnimationFrame(update);}catch(e){update();} ticking=true; } }, {passive:true}); }catch(e){}
+        try{ if(gw) gw.addEventListener('scroll', function(){ if(!ticking){ try{ window.requestAnimationFrame(update);}catch(e){update();} ticking=true; } }, {passive:true}); }catch(e){}
+        try{ if(mm) mm.addEventListener('scroll', function(){ if(!ticking){ try{ window.requestAnimationFrame(update);}catch(e){update();} ticking=true; } }, {passive:true}); }catch(e){}
+        try{ new MutationObserver(update).observe(document.body,{attributes:true,childList:true,subtree:true}); }catch(e){}
+        try{ window.addEventListener('resize', update, {passive:true}); }catch(e){}
+        // cap nhat ngay sau khi anh load
+        setInterval(update, 500);
+      })();
+    </script>
 
     <footer>
         <div id="textbox">
@@ -426,6 +1035,7 @@
           var api={
             els:els,
             on:function(evt,fn){ els.forEach(function(e){ e.__listeners=e.__listeners||{}; (e.__listeners[evt]=e.__listeners[evt]||[]).push(fn); e.addEventListener(evt,fn); }); return api; },
+            one:function(evt,fn){ els.forEach(function(e){ var handler=function(ev){ e.removeEventListener(evt,handler); fn.apply(e,arguments); }; e.addEventListener(evt,handler); }); return api; },
             off:function(evt){ els.forEach(function(e){ if(e.__listeners&&e.__listeners[evt]){ e.__listeners[evt].forEach(function(fn){ e.removeEventListener(evt,fn); }); e.__listeners[evt]=[]; } }); return api; },
             click:function(fn){ return api.on('click',fn); },
             fadeIn:function(){ els.forEach(function(e){ e.style.display='block'; }); return api; },
@@ -462,12 +1072,16 @@
         <script>
           (function(){
             function ensure(s,m){ s=String(s||''); if(!s) return ''; return s.startsWith('data:')? s : ('data:'+(m||'application/octet-stream')+';base64,'+s); }
-            document.addEventListener('DOMContentLoaded', function(){
-             try {
+            function applyBundledAssets(){
+              try {
                 var gd=document.getElementById('game-data'); var obj=gd? JSON.parse(gd.textContent||'{}') : {}; var assets=(obj.game_config||{}).millionaire_assets||{};
                 // logos
                 var uriLogo=ensure(assets.logo_base64,'image/png');
-                document.querySelectorAll('img.logo, img.logoSm, img.loaderLogo').forEach(function(img){ if(uriLogo) img.src=uriLogo; });
+                document.querySelectorAll('img.logo, img.logoSm, img.loaderLogo').forEach(function(img){
+                  if(uriLogo){ img.src=uriLogo; }
+                  var fallbackLogo = img.getAttribute('data-default') || 'images/Logo.png';
+                  if (!img.getAttribute('src')) { img.setAttribute('src', fallbackLogo); }
+                });
                 // video
                 var v=document.getElementById('introVideo'); if(v && assets.intro_video_base64){ var vs=v.querySelector('source'); if(vs){ vs.src=ensure(assets.intro_video_base64,'video/mp4'); v.load(); } }
                 // music/effects
@@ -476,24 +1090,16 @@
                 document.querySelectorAll('audio#effects source').forEach(function(s,i){ if(eff[i]){ s.src=ensure(eff[i],'audio/mpeg'); var a=s.parentElement; a && a.load(); } });
                 // backgrounds
                 var bgs=assets.background_images_base64||{};
-                // teacher time limits fallback patch
+                // teacher time limits: per-question time_limit values are preserved
                 try {
                   var default_time = parseInt(((obj.game_config||{}).question_time)||60,10);
-                  if (default_time === 45) { default_time = 30; } // workaround: đồng bộ với trình chỉnh sửa 30s
                   window.DEFAULT_QUESTION_TIME = default_time;
-                  var qs = Array.isArray(obj.questions)? obj.questions: [];
-                  if (Array.isArray(window.EDU_QUESTIONS) && window.EDU_QUESTIONS.length) {
-                    for (var i=0; i<window.EDU_QUESTIONS.length && i<qs.length; i++) {
-                      // Force all questions to use project default if per-question time is missing or unreliable
-                      var tl = default_time;
-                      window.EDU_QUESTIONS[i].time_limit = tl;
-                    }
-                  }
                 } catch(e){}
                 // init visual timer label/value for shim
                 var t=document.getElementById('timer'); if(t){ var dt=(window.DEFAULT_QUESTION_TIME||60); t.setAttribute('data-timer', String(dt)); t.innerHTML='<div class="tc-label">TIME</div><div class="tc-value">'+dt+'</div>'; }
               } catch(e){}
-            });
+            }
+            if(document.readyState==='loading'){ document.addEventListener('DOMContentLoaded', applyBundledAssets); } else { applyBundledAssets(); }
           })();
           // Minimal modal toggling
           (function(){

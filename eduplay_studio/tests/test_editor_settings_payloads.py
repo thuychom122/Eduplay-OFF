@@ -365,7 +365,11 @@ class TestEditorSettingsPayloads(unittest.TestCase):
             [34, 33, 33],
         )
 
-    def test_on_question_selected_rebalances_and_persists_auto_points_before_question_save(self):
+    def test_on_question_selected_does_not_rebalance_or_save(self):
+        """Chon cau KHONG duoc rebalance/luu.
+
+        Rebalance + save luc chon gay clear danh sach -> nhay sai cau (Q10 -> Q9)
+        va to sai mau. Chi dung o add/delete/save moi tinh lai diem."""
         from eduplay.ui.screens.editor_screen import EditorScreen
 
         project = {
@@ -401,11 +405,48 @@ class TestEditorSettingsPayloads(unittest.TestCase):
 
         self.assertEqual(
             [q.get("points") for q in project.get("questions") or []],
-            [34, 33, 33],
+            [50, 50, 0],
+            "chon cau khong duoc sua diem (rebalance chi o add/delete/save)",
         )
+        self.assertIsNone(project_manager.saved_project, "chon cau khong duoc save lai project")
         self.assertIs(center_panel.last_question, project["questions"][2])
         self.assertEqual(center_panel.last_index, 2)
-        self.assertIs(project_manager.saved_project, project)
+
+    def test_rebalance_distributes_points_evenly(self):
+        from eduplay.ui.screens.editor_screen import EditorScreen
+
+        project = {
+            "id": "p1",
+            "questions": [
+                {"id": "q1", "question": "Q1", "points": 50},
+                {"id": "q2", "question": "Q2", "points": 50},
+                {"id": "q3", "question": "Q3", "points": 0},
+            ],
+            "game_config": {"auto_points_enabled": True, "total_points": 100},
+        }
+        dummy = types.SimpleNamespace(current_project=project)
+
+        EditorScreen._rebalance_project_question_points(dummy)
+
+        self.assertEqual([q["points"] for q in project["questions"]], [34, 33, 33])
+        self.assertEqual(project["game_config"]["points_per_question"], 33)
+
+    def test_rebalance_noop_when_auto_points_disabled(self):
+        from eduplay.ui.screens.editor_screen import EditorScreen
+
+        project = {
+            "id": "p1",
+            "questions": [
+                {"id": "q1", "question": "Q1", "points": 50},
+                {"id": "q2", "question": "Q2", "points": 50},
+            ],
+            "game_config": {"auto_points_enabled": False, "total_points": 100},
+        }
+        dummy = types.SimpleNamespace(current_project=project)
+
+        EditorScreen._rebalance_project_question_points(dummy)
+
+        self.assertEqual([q["points"] for q in project["questions"]], [50, 50])
 
 
 if __name__ == "__main__":

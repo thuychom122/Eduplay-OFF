@@ -428,6 +428,7 @@ class BrowserScreen(QWidget):
     project_selected = Signal(dict)
     back_clicked = Signal()
     create_new_clicked = Signal()
+    import_questions_to_new = Signal(str)
     
     def __init__(self):
         super().__init__()
@@ -570,7 +571,7 @@ class BrowserScreen(QWidget):
         self._apply_title_style(effective_scale)
         button_height = max(40, int(round(48 * float(effective_scale))))
         button_font_size = max(11, int(round(button_height * 0.36)))
-        for btn in [getattr(self, "back_btn", None), getattr(self, "import_btn", None), getattr(self, "refresh_btn", None)]:
+        for btn in [getattr(self, "back_btn", None), getattr(self, "import_btn", None), getattr(self, "refresh_btn", None), getattr(self, "links_btn", None)]:
             if not btn:
                 continue
             btn.setFixedHeight(button_height)
@@ -637,7 +638,7 @@ class BrowserScreen(QWidget):
                             background-color: #7F56D9;
                             color: #FFFFFF;
                         }
-                        QListView::item:hover:!selected {
+                        QListView::item:hover {
                             background-color: #1F2933;
                         }
                         """
@@ -680,7 +681,7 @@ class BrowserScreen(QWidget):
                             background-color: #7F56D9;
                             color: #FFFFFF;
                         }
-                        QListView::item:hover:!selected {
+                        QListView::item:hover {
                             background-color: #E0EAFF;
                         }
                         """
@@ -800,6 +801,11 @@ class BrowserScreen(QWidget):
                 color: #FFFFFF;
                 border-color: #5A5E6A;
             }
+            QPushButton:pressed {
+                background-color: #2A2D38;
+                color: #FFFFFF;
+                border-color: #5A5E6A;
+            }
         """)
         try:
             self.back_btn.setProperty("secondary", True)
@@ -889,13 +895,16 @@ class BrowserScreen(QWidget):
             QPushButton:hover {
                 background-color: #8B66E9;
             }
+            QPushButton:pressed {
+                background-color: #6D28D9;
+            }
         """)
         try:
             self.import_btn.setProperty("primary", True)
         except Exception:
             pass
         self._set_button_icon(self.import_btn, "import", "#FFFFFF", 16)
-        self.import_btn.clicked.connect(self.import_project)
+        self.import_btn.clicked.connect(self.import_questions_to_new_project)
         header_layout.addWidget(self.import_btn)
         
         try:
@@ -919,6 +928,9 @@ class BrowserScreen(QWidget):
             QPushButton:hover {
                 background-color: #22C77A;
             }
+            QPushButton:pressed {
+                background-color: #0E9E5C;
+            }
         """)
         try:
             self.refresh_btn.setProperty("success", True)
@@ -927,7 +939,43 @@ class BrowserScreen(QWidget):
         self._set_button_icon(self.refresh_btn, "refresh", "#FFFFFF", 16)
         self.refresh_btn.clicked.connect(self.refresh_projects)
         header_layout.addWidget(self.refresh_btn)
-        
+
+        try:
+            if I18n:
+                links_text = I18n.t('browser.links', lang)
+            else:
+                links_text = "🔗 Links"
+        except Exception:
+            links_text = "🔗 Links"
+        self.links_btn = QPushButton(strip_icon_text(links_text))
+        self.links_btn.setStyleSheet("""
+            QPushButton {
+                background-color: #0EA5E9;
+                color: #FFFFFF;
+                border: none;
+                border-radius: 8px;
+                padding: 10px 20px;
+                font-size: 14px;
+                font-weight: 600;
+            }
+            QPushButton:hover {
+                background-color: #0284C7;
+            }
+            QPushButton:pressed {
+                background-color: #0369A1;
+            }
+        """)
+        try:
+            self.links_btn.setProperty("info", True)
+        except Exception:
+            pass
+        try:
+            self._set_button_icon(self.links_btn, "web", "#FFFFFF", 16)
+        except Exception:
+            pass
+        self.links_btn.clicked.connect(self.open_published_links)
+        header_layout.addWidget(self.links_btn)
+
         layout.addWidget(header)
         self._apply_header_scale()
     
@@ -976,6 +1024,35 @@ class BrowserScreen(QWidget):
         
         # Get all projects
         self.all_projects = self.project_manager.get_all_projects()
+        try:
+            names = self.project_manager.pop_restored_names() if hasattr(self.project_manager, "pop_restored_names") else []
+            if names:
+                try:
+                    from eduplay.core.i18n import I18n as _I18nBk
+                    l = self._current_lang()
+                    t = _I18nBk.t("project.backup_restored_title", l)
+                    if not t or t == "project.backup_restored_title":
+                        raise ValueError("i18n-missing")
+                    m = _I18nBk.t("project.backup_restored_list", l, count=len(names), names=", ".join(f'"{n}"' for n in names[:8]))
+                    if not m or m == "project.backup_restored_list":
+                        raise ValueError("i18n-missing")
+                except Exception:
+                    l = self._current_lang()
+                    if l == "vi":
+                        t = "Đã khôi phục từ backup"
+                        m = f"Đã tự khôi phục {len(names)} dự án bị lỗi từ backup: " + ", ".join(f'"{n}"' for n in names[:8])
+                    else:
+                        t = "Restored from backup"
+                        m = f"Restored {len(names)} corrupted projects from backup: " + ", ".join(f'"{n}"' for n in names[:8])
+                self._show_message(t, m, "warning")
+                try:
+                    win = self.window()
+                    if win and hasattr(win, "show_system_notification"):
+                        win.show_system_notification(t, m, "warning")
+                except Exception:
+                    pass
+        except Exception:
+            pass
         try:
             from eduplay.core.settings_manager import SettingsManager
             recent = SettingsManager().get_recent_projects() or []
@@ -1325,6 +1402,12 @@ class BrowserScreen(QWidget):
                     padding: 8px 12px;
                     font-size: 14px;
                 }}
+                QLineEdit:focus {{
+                    border: 1px solid {brand};
+                }}
+                QLineEdit:hover {{
+                    border: 1px solid {brand};
+                }}
                 QPushButton {{
                     min-width: 96px;
                     padding: 8px 16px;
@@ -1337,6 +1420,9 @@ class BrowserScreen(QWidget):
                 QPushButton:hover {{
                     background-color: {btn_hover};
                 }}
+                QPushButton:pressed {{
+                    background-color: {btn_border};
+                }}
                 QPushButton#primary {{
                     background-color: {brand};
                     border-color: {brand};
@@ -1345,6 +1431,10 @@ class BrowserScreen(QWidget):
                 QPushButton#primary:hover {{
                     background-color: {brand_hover};
                     border-color: {brand_hover};
+                }}
+                QPushButton#primary:pressed {{
+                    background-color: #6D28D9;
+                    border-color: #6D28D9;
                 }}
                 QFrame#sep {{
                     background-color: {subtle};
@@ -1401,8 +1491,42 @@ class BrowserScreen(QWidget):
                 return
             from eduplay.core.project_manager import ProjectManager
             pm = self.project_manager or ProjectManager()
-            project_data["name"] = new_name
-            pm.save_project(project_data)
+            try:
+                own_id = str((project_data or {}).get("id") or "").strip()
+            except Exception:
+                own_id = ""
+            try:
+                _dup_lang = lang
+            except Exception:
+                _dup_lang = "en"
+            try:
+                renamed = pm.rename_project(own_id, new_name)
+                try:
+                    project_data.update(renamed)
+                except Exception:
+                    pass
+            except ValueError as e_rename:
+                try:
+                    dup_msg = I18n.t("project.duplicate_message", _dup_lang, name=str(new_name or "").strip())
+                    if not dup_msg or dup_msg == "project.duplicate_message":
+                        raise ValueError("i18n-missing")
+                except Exception:
+                    try:
+                        dup_msg = str(e_rename) or (
+                            f'Đã có dự án tên "{new_name}" trên máy này. Vui lòng chọn tên khác.'
+                            if _dup_lang == "vi"
+                            else f'A project named "{new_name}" already exists on this machine. Please choose another name.'
+                        )
+                    except Exception:
+                        dup_msg = str(e_rename)
+                self._show_message(error_title, dup_msg, "warning")
+                try:
+                    win = self.window()
+                    if win and hasattr(win, "show_system_notification"):
+                        win.show_system_notification(error_title, dup_msg, "warning")
+                except Exception:
+                    pass
+                return
             self._show_message(success_title, success_msg, "success")
             try:
                 win = self.window()
@@ -1413,13 +1537,13 @@ class BrowserScreen(QWidget):
             self.refresh_projects()
         except Exception as e:
             try:
-                self._show_message(error_title, f"{error_msg}: {str(e)}", "error")
+                self._show_message(error_title, I18n.t('toast.rename_error', lang, error=str(e)) if I18n else f"Rename error: {str(e)}", "error")
             except Exception:
-                self._show_message("Error", f"Failed to rename: {str(e)}", "error")
+                pass
             try:
                 win = self.window()
                 if win and hasattr(win, "show_system_notification"):
-                    win.show_system_notification(error_title, f"{error_msg}: {str(e)}", "error")
+                    win.show_system_notification(error_title, I18n.t('toast.rename_error', lang, error=str(e)) if I18n else f"{error_msg}: {str(e)}", "error")
             except Exception:
                 pass
 
@@ -1531,6 +1655,9 @@ class BrowserScreen(QWidget):
                 QPushButton:hover {{
                     background-color: {btn_hover};
                 }}
+                QPushButton:pressed {{
+                    background-color: {btn_border};
+                }}
                 QPushButton#primary {{
                     background-color: {brand};
                     border-color: {brand};
@@ -1539,6 +1666,10 @@ class BrowserScreen(QWidget):
                 QPushButton#primary:hover {{
                     background-color: {brand_hover};
                     border-color: {brand_hover};
+                }}
+                QPushButton#primary:pressed {{
+                    background-color: #6D28D9;
+                    border-color: #6D28D9;
                 }}
                 QPushButton#close {{
                     min-width: 34px;
@@ -1606,28 +1737,61 @@ class BrowserScreen(QWidget):
                 return
             from eduplay.core.project_manager import ProjectManager
             pm = self.project_manager or ProjectManager()
-            pm.delete_project(project_data.get("id",""))
+            pid_to_del = str(project_data.get("id") or "").strip()
+            ok = False
             try:
-                win = self.window()
-                if win and hasattr(win, "show_system_notification"):
-                    win.show_system_notification(success_title, success_msg, "success")
-                else:
-                    self._show_message(success_title, success_msg, "success")
-            except Exception:
+                ok = bool(pm.delete_project(pid_to_del))
+            except Exception as _e_del:
                 try:
-                    self._show_message(success_title, success_msg, "success")
+                    print(f"[BROWSER] delete_project {pid_to_del} exception: {_e_del}")
                 except Exception:
                     pass
+                ok = False
+            if ok:
+                try:
+                    win = self.window()
+                    if win and hasattr(win, "show_system_notification"):
+                        win.show_system_notification(success_title, success_msg, "success")
+                    else:
+                        self._show_message(success_title, success_msg, "success")
+                except Exception:
+                    try:
+                        self._show_message(success_title, success_msg, "success")
+                    except Exception:
+                        pass
+            else:
+                try:
+                    win = self.window()
+                    try:
+                        _t = I18n.t("browser.delete_project_locked", lang) if I18n else ""
+                        if _t and _t != "browser.delete_project_locked":
+                            try:
+                                err_detail = _t.format(pid=pid_to_del)
+                            except Exception:
+                                err_detail = _t
+                        else:
+                            raise ValueError("i18n-missing")
+                    except Exception:
+                        err_detail = f"Không thể xóa '{pid_to_del}'. Thư mục có thể đang mở hoặc bị khóa bởi OneDrive. Hãy đóng dự án và thử lại."
+                    if win and hasattr(win, "show_system_notification"):
+                        win.show_system_notification(error_title, err_detail, "error")
+                    else:
+                        self._show_message(error_title, err_detail, "error")
+                except Exception:
+                    try:
+                        self._show_message(error_title, error_msg, "error")
+                    except Exception:
+                        pass
             self.refresh_projects()
         except Exception as e:
             try:
-                self._show_message(error_title, f"{error_msg}: {str(e)}", "error")
+                self._show_message(error_title, I18n.t('toast.delete_error', lang, error=str(e)) if I18n else f"Delete error: {str(e)}", "error")
             except Exception:
-                self._show_message("Error", f"Failed to delete: {str(e)}", "error")
+                pass
             try:
                 win = self.window()
                 if win and hasattr(win, "show_system_notification"):
-                    win.show_system_notification(error_title, f"{error_msg}: {str(e)}", "error")
+                    win.show_system_notification(error_title, I18n.t('toast.delete_error', lang, error=str(e)) if I18n else f"{error_msg}: {str(e)}", "error")
             except Exception:
                 pass
 
@@ -1654,7 +1818,7 @@ class BrowserScreen(QWidget):
             self._show_message(success_title, success_msg, "success")
             self.refresh_projects()
         except Exception as e:
-            self._show_message("Error", str(e), "error")
+            self._show_message(error_title or (I18n.t('browser.error', lang) if I18n else "Error"), str(e), "error")
 
     def on_project_edit_tags(self, project_data: dict):
         try:
@@ -1757,6 +1921,12 @@ class BrowserScreen(QWidget):
                     padding: 8px 12px;
                     font-size: 14px;
                 }}
+                QLineEdit:focus {{
+                    border: 1px solid {brand};
+                }}
+                QLineEdit:hover {{
+                    border: 1px solid {brand};
+                }}
                 QPushButton {{
                     min-width: 96px;
                     padding: 8px 16px;
@@ -1769,6 +1939,9 @@ class BrowserScreen(QWidget):
                 QPushButton:hover {{
                     background-color: {btn_hover};
                 }}
+                QPushButton:pressed {{
+                    background-color: {btn_border};
+                }}
                 QPushButton#primary {{
                     background-color: {brand};
                     border-color: {brand};
@@ -1777,6 +1950,10 @@ class BrowserScreen(QWidget):
                 QPushButton#primary:hover {{
                     background-color: {brand_hover};
                     border-color: {brand_hover};
+                }}
+                QPushButton#primary:pressed {{
+                    background-color: #6D28D9;
+                    border-color: #6D28D9;
                 }}
                 QFrame#sep {{
                     background-color: {subtle};
@@ -1832,12 +2009,44 @@ class BrowserScreen(QWidget):
             tags = [part.strip() for part in str(raw_tags or "").split(",")]
             updated = self.project_manager.update_project_tags(str(project_data.get("id") or ""), tags)
             if not updated:
-                self._show_message(error_msg, "Failed to update tags.", "error")
+                self._show_message(error_msg, I18n.t('toast.tag_update_failed', lang) if I18n else "Could not update tags.", "error")
                 return
             self.refresh_projects()
         except Exception as e:
-            self._show_message("Error", str(e), "error")
+            self._show_message(error_msg or (I18n.t('toast.tag_update_error', lang, error=str(e)) if I18n else str(e)), "", "error")
     
+    def import_questions_to_new_project(self):
+        """Pick a question file, then go to the new-project form.
+
+        The file path is emitted via import_questions_to_new; MainWindow
+        stores it and auto-imports its questions after the project is created.
+        """
+        try:
+            from eduplay.core.i18n import I18n
+            from eduplay.core.settings_manager import SettingsManager
+            try:
+                lang = SettingsManager().get_language() or 'en'
+            except Exception:
+                lang = 'en'
+            try:
+                caption = I18n.t("import.dialog_title", lang)
+            except Exception:
+                caption = "Nhập câu hỏi"
+            try:
+                filt = I18n.t("import.file_filters_all", lang)
+            except Exception:
+                filt = "Documents (*.txt *.docx *.doc *.pdf *.xlsx);;All Files (*.*)"
+            try:
+                from eduplay.ui.file_dialogs import get_open_file_name
+                file_path = get_open_file_name(self, caption, "", filt)
+            except Exception:
+                file_path, _ = QFileDialog.getOpenFileName(self, caption, "", filt)
+            if not file_path:
+                return
+            self.import_questions_to_new.emit(str(file_path))
+        except Exception:
+            pass
+
     def import_project(self):
         """Import project from file"""
         try:
@@ -1854,7 +2063,27 @@ class BrowserScreen(QWidget):
             name = data.get('name', I18n.t('browser.imported_project', l))
             desc = data.get('description', '')
             game_type = data.get('game_type', 'quiz_classic')
-            new_proj = pm.create_project(name, desc, game_type)
+            new_proj = pm.create_project(name, desc, game_type, on_duplicate="suffix")
+            try:
+                if str(new_proj.get("name") or "") != str(name or ""):
+                    try:
+                        dup_note = I18n.t("browser.import_renamed", l, old=str(name or ""), new=str(new_proj.get("name") or ""))
+                        if not dup_note or dup_note == "browser.import_renamed":
+                            raise ValueError("i18n-missing")
+                    except Exception:
+                        dup_note = (
+                            f'Tên "{name}" đã tồn tại nên dự án nhập vào được lưu thành "{new_proj.get("name")}".'
+                            if (l or "en") == "vi"
+                            else f'Name "{name}" already exists, imported project saved as "{new_proj.get("name")}".'
+                        )
+                    try:
+                        win0 = self.window()
+                        if win0 and hasattr(win0, "show_system_notification"):
+                            win0.show_system_notification(I18n.t('browser.import_title', l), dup_note, "warning")
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             # Copy questions and config
             new_proj['questions'] = data.get('questions', [])
             new_proj['game_config'] = data.get('game_config', new_proj.get('game_config', {}))
@@ -1902,6 +2131,18 @@ class BrowserScreen(QWidget):
         except Exception:
             pass
 
+    def open_published_links(self):
+        """Mo dialog quan ly cac link do may nay xuat ban."""
+        try:
+            from eduplay.ui.widgets.published_links_dialog import PublishedLinksDialog
+            dlg = PublishedLinksDialog(settings_manager=getattr(self, "settings_manager", None), parent=self)
+            dlg.exec()
+        except Exception as e:
+            try:
+                self._show_message("Error", str(e), "error")
+            except Exception:
+                pass
+
     def set_language(self, lang: str):
         from eduplay.core.i18n import I18n
         l = lang or 'en'
@@ -1912,6 +2153,11 @@ class BrowserScreen(QWidget):
             self.title_label.setText(I18n.t('browser.my_projects', l))
             self.import_btn.setText(strip_icon_text(I18n.t('browser.import', l)))
             self.refresh_btn.setText(strip_icon_text(I18n.t('browser.refresh', l)))
+            try:
+                if hasattr(self, "links_btn") and self.links_btn:
+                    self.links_btn.setText(strip_icon_text(I18n.t('browser.links', l)))
+            except Exception:
+                pass
             if hasattr(self, "_empty_message_label"):
                 self._empty_message_label.setText(I18n.t("browser.empty_title", l))
             if hasattr(self, "_empty_submessage_label"):

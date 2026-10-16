@@ -1018,22 +1018,29 @@ class EditorRightPanel(QWidget):
             }
         question_type = question_data.get("type", "multiple_choice")
         self.info_items["type"].setText(type_names.get(question_type, question_type))
-        
+
         # Difficulty
-        difficulty = question_data.get("difficulty", "Trung bình")
-        self.info_items["difficulty"].setText(difficulty)
-        
+        difficulty = question_data.get("difficulty", "Medium")
+        diff_map = {
+            "easy": "editor.left.difficulty_easy",
+            "medium": "editor.left.difficulty_medium",
+            "hard": "editor.left.difficulty_hard",
+        }
+        diff_key = diff_map.get(str(difficulty).strip().lower())
+        difficulty_label = I18n.t(diff_key, lang) if diff_key else difficulty
+        self.info_items["difficulty"].setText(difficulty_label)
+
         # Time limit
         time_limit = question_data.get("time_limit", 30)
-        self.info_items["time"].setText(f"{time_limit} giây")
-        
+        self.info_items["time"].setText(f"{time_limit} {I18n.t('common.seconds', lang)}")
+
         # Points
         points = question_data.get("points", 10)
-        self.info_items["points"].setText(f"{points} điểm")
-        
+        self.info_items["points"].setText(f"{points} {I18n.t('common.points', lang)}")
+
         # Tags
         tags = question_data.get("tags", [])
-        tags_text = ", ".join(tags) if tags else "Không có"
+        tags_text = ", ".join(tags) if tags else I18n.t("common.none", lang)
         self.info_items["tags"].setText(tags_text)
     
     def escape_html(self, text: str) -> str:

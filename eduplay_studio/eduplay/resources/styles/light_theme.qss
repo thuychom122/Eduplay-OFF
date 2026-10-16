@@ -153,7 +153,7 @@ QComboBox QAbstractItemView::item:selected {
     background-color: #7C3AED;
     color: #FFFFFF;
 }
-QComboBox QAbstractItemView::item:hover:!selected {
+QComboBox QAbstractItemView::item:hover {
     background-color: #F4F7FB;
     color: #0F172A;
 }
@@ -201,7 +201,7 @@ QTabBar::tab:selected {
     color: #0F172A;
     border-color: #C6B7F8;
 }
-QTabBar::tab:hover:!selected {
+QTabBar::tab:hover {
     background-color: #E4EBF4;
     color: #0F172A;
 }

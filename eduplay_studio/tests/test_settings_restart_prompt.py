@@ -211,7 +211,7 @@ class TestSettingsRestartPrompt(unittest.TestCase):
         signal_hits = []
         dialog.settings_changed.connect(lambda: signal_hits.append("changed"))
 
-        with mock.patch("eduplay.ui.widgets.settings_dialog.QMessageBox.question", return_value=QMessageBox.Yes), \
+        with mock.patch("eduplay.ui.widgets.confirm_dialog.ask_confirm", return_value=True), \
              mock.patch("eduplay.ui.widgets.settings_dialog.QMessageBox.information"):
             dialog.reset_settings()
 

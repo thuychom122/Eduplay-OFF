@@ -1261,30 +1261,39 @@ class PlayerScreen(QWidget):
         except Exception:
             pass
     
+    def _record_recent_project(self, project_data):
+        """Remember a successfully opened project for quick actions."""
+        try:
+            pid = str((project_data or {}).get("id") or "").strip()
+            if not pid:
+                return
+            from eduplay.core.settings_manager import SettingsManager
+            SettingsManager().add_recent_project(pid, str((project_data or {}).get("name") or ""))
+        except Exception:
+            pass
+
     def load_project_game(self, project_data):
         """Load game from project data"""
         try:
-            # Import project manager
+            from eduplay.core.i18n import I18n
             from eduplay.core.project_manager import ProjectManager
             
             if not self.project_manager:
                 self.project_manager = ProjectManager()
             
-            # Get project path
             project_id = project_data.get("id", "")
             project_dir = PathResolver.resolve_projects_dir() / project_id
             
-            # Look for exported game files
+            # 1) Check for exported HTML in export/html/
             export_dir = project_dir / "export"
             if export_dir.exists():
-                # Check for HTML export first
                 html_export = export_dir / "html"
                 if html_export.exists():
                     index_file = html_export / "index.html"
                     if index_file.exists():
+                        self._record_recent_project(project_data)
                         self.load_html_game(str(index_file))
                         return
-                # Support single-file HTML exports directly under export dir
                 try:
                     single_files = sorted(export_dir.glob("*.html"), key=lambda p: p.stat().st_mtime, reverse=True)
                 except Exception:
@@ -1293,37 +1302,63 @@ class PlayerScreen(QWidget):
                     try:
                         content = sf.read_text(encoding="utf-8", errors="ignore")
                         if any(m in content for m in ["const gameData", '"game_type": "fishing"', "quiz-root"]):
+                            self._record_recent_project(project_data)
                             self.load_html_game(str(sf))
                             return
                     except Exception:
                         continue
-                
-                # Check for Python export
                 python_export = export_dir / "python"
                 if python_export.exists():
                     game_file = python_export / "game.py"
                     if game_file.exists():
+                        self._record_recent_project(project_data)
                         self.load_python_game(str(game_file))
                         return
             
-            # If no export found, show message
+            # 2) Check for *_preview.html in project root
+            try:
+                previews = sorted(project_dir.glob("*_preview.html"), key=lambda p: p.stat().st_mtime, reverse=True)
+            except Exception:
+                previews = []
+            for pv in previews:
+                try:
+                    self._record_recent_project(project_data)
+                    self.load_html_game(str(pv))
+                    return
+                except Exception:
+                    continue
+
+            # 3) Check for any .html in project root
+            try:
+                htmls = sorted(project_dir.glob("*.html"), key=lambda p: p.stat().st_mtime, reverse=True)
+            except Exception:
+                htmls = []
+            for hf in htmls:
+                try:
+                    self._record_recent_project(project_data)
+                    self.load_html_game(str(hf))
+                    return
+                except Exception:
+                    continue
+
             QMessageBox.information(
                 self,
-                "Chưa xuất bản",
-                "Dự án này chưa được xuất bản. Vui lòng xuất bản dự án trước khi chơi."
+                I18n.t("player.not_published_title"),
+                I18n.t("player.not_published_desc"),
             )
-            
+
         except Exception as e:
             QMessageBox.critical(
                 self,
-                "Lỗi tải game",
-                f"Không thể tải game từ dự án:\n{str(e)}"
+                I18n.t("player.warning_title"),
+                I18n.t("player.load_game_error_desc", error=str(e)),
             )
     
     def load_from_project(self):
         """Load game from existing project"""
         try:
             # Import project manager
+            from eduplay.core.i18n import I18n
             from eduplay.core.project_manager import ProjectManager
             
             if not self.project_manager:
@@ -1335,8 +1370,8 @@ class PlayerScreen(QWidget):
             if not projects:
                 QMessageBox.information(
                     self,
-                    "Không có dự án",
-                    "Chưa có dự án nào được tạo. Vui lòng tạo dự án trước."
+                    I18n.t("player.no_project_title"),
+                    I18n.t("player.no_project_desc"),
                 )
                 return
             
@@ -1348,8 +1383,8 @@ class PlayerScreen(QWidget):
         except Exception as e:
             QMessageBox.critical(
                 self,
-                "Lỗi tải dự án",
-                f"Không thể tải dự án:\n{str(e)}"
+                I18n.t("player.warning_title"),
+                I18n.t("player.load_project_error_desc", error=str(e)),
             )
     
     def apply_theme(self, theme: str | None = None):

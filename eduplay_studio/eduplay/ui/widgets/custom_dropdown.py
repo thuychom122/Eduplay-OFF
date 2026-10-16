@@ -56,7 +56,7 @@ class FlatDropdown(QWidget):
                 background-color: #7F56D9;
                 color: #FFFFFF;
             }
-            QListView::item:hover:!selected {
+            QListView::item:hover {
                 background-color: #EEF2FF;
                 color: #0F172A;
             }

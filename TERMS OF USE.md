@@ -114,7 +114,8 @@ If any provision is found invalid, the remaining provisions shall remain in effe
 ## 12. Contact Information
 
 **EduPlay Studio**  
-Email: eduplay.line@hotmail.com  
+Email: support@eduplay-studio.io.vn  
+Website: https://eduplay-studio.io.vn  
 Project Repository: (set the correct repository URL for your distribution)
 
 ---

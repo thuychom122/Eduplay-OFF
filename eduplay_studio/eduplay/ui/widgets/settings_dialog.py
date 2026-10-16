@@ -101,11 +101,35 @@ class SettingsDialog(QDialog):
         self.tabs = QTabWidget()
         layout.addWidget(self.tabs)
         
-        # Create tabs
+        # Create tabs (AI tab tạo ngầm nhưng ẨN khỏi user: cố định hạ tầng 20B/120B/Qwen, user không chỉnh)
         self.create_general_tab()
+        self.create_ai_tab()  # tạo widgets cho test nhưng sẽ ẩn tab khỏi UI
         self.create_editor_tab()
         self.create_game_defaults_tab()
         self.create_addin_tab()
+        # Ẩn tab AI khỏi người dùng ngay sau khi tạo
+        try:
+            for i in range(self.tabs.count()):
+                if self.tabs.tabText(i).strip().lower() in ("ai", "ai server", "trí tuệ nhân tạo"):
+                    self.tabs.setTabVisible(i, False)
+                    break
+            # Fallback: nếu tabText không khớp (do i18n), ẩn tab index 1 (vị trí AI)
+            if self.tabs.count() >= 2:
+                # Kiểm tra nếu tab 1 chính là AI (có groq widgets)
+                if hasattr(self, "groq_base_url_input"):
+                    try:
+                        self.tabs.setTabVisible(1, False)
+                    except Exception:
+                        try:
+                            self.tabs.removeTab(1)
+                        except Exception:
+                            pass
+        except Exception:
+            try:
+                if hasattr(self, "groq_base_url_input") and self.tabs.count() > 1:
+                    self.tabs.removeTab(1)
+            except Exception:
+                pass
         
         # Create buttons
         button_layout = QHBoxLayout()
@@ -237,14 +261,14 @@ class SettingsDialog(QDialog):
                 background-color: #7F56D9;
                 color: #FFFFFF;
             }}
-            QComboBox QAbstractItemView::item:hover:!selected {{
+            QComboBox QAbstractItemView::item:hover {{
                 background-color: {popup_hover};
             }}
             {extra_light_css}
             """
         )
         try:
-            dropdown_names = ("language_combo", "theme_combo", "model_combo", "font_family_combo")
+            dropdown_names = ("language_combo", "theme_combo", "font_family_combo")
             for name in dropdown_names:
                 w = getattr(self, name, None)
                 if not w or not hasattr(w, "button") or not hasattr(w, "popup"):
@@ -287,7 +311,7 @@ class SettingsDialog(QDialog):
                             background-color: #7F56D9;
                             color: #FFFFFF;
                         }
-                        QListView::item:hover:!selected {
+                        QListView::item:hover {
                             background-color: #1F2933;
                         }
                         """
@@ -330,7 +354,7 @@ class SettingsDialog(QDialog):
                             background-color: #7F56D9;
                             color: #FFFFFF;
                         }
-                        QListView::item:hover:!selected {
+                        QListView::item:hover {
                             background-color: #E0EAFF;
                         }
                         """
@@ -465,6 +489,44 @@ class SettingsDialog(QDialog):
         accessibility_layout.addWidget(self.reduce_motion_check)
         accessibility_group.setLayout(accessibility_layout)
         layout.addWidget(accessibility_group)
+
+        try:
+            device_title = I18n.t('settings.device', lang) if I18n else "Device"
+            device_name_label = I18n.t('settings.device_name', lang) if I18n else "Device name:"
+            device_hint = I18n.t('settings.device_hint', lang) if I18n else "Hiển thị kèm link xuất bản để nhận biết máy nào đưa lên."
+            open_log_text = I18n.t('settings.open_log_folder', lang) if I18n else "Open log folder"
+        except Exception:
+            device_title = "Device"
+            device_name_label = "Device name:"
+            device_hint = "Hiển thị kèm link xuất bản để nhận biết máy nào đưa lên."
+            open_log_text = "Open log folder"
+        device_group = QGroupBox(device_title)
+        device_layout = QVBoxLayout()
+        device_layout.addWidget(QLabel(device_name_label))
+        self.device_name_input = QLineEdit()
+        try:
+            self.device_name_input.setMaxLength(60)
+            self.device_name_input.setPlaceholderText(device_name_label)
+        except Exception:
+            pass
+        device_layout.addWidget(self.device_name_input)
+        hint_lbl = QLabel(device_hint)
+        try:
+            hint_lbl.setWordWrap(True)
+        except Exception:
+            pass
+        device_layout.addWidget(hint_lbl)
+        self.open_log_btn = QPushButton(open_log_text)
+        try:
+            self.open_log_btn.clicked.connect(self._on_open_log_folder)
+        except Exception:
+            pass
+        log_row = QHBoxLayout()
+        log_row.addStretch()
+        log_row.addWidget(self.open_log_btn)
+        device_layout.addLayout(log_row)
+        device_group.setLayout(device_layout)
+        layout.addWidget(device_group)
 
         credits_btn_layout = QHBoxLayout()
         try:
@@ -827,6 +889,11 @@ class SettingsDialog(QDialog):
             self.reduce_motion_check.setChecked(bool(accessibility.get("reduce_motion", False)))
         except Exception:
             pass
+        try:
+            if hasattr(self, "device_name_input") and self.device_name_input:
+                self.device_name_input.setText(self.settings_manager.get_device_name())
+        except Exception:
+            pass
 
         # Editor settings
         editor_settings = self.settings_manager.get_editor_settings()
@@ -857,17 +924,21 @@ class SettingsDialog(QDialog):
             ai_settings = self.settings_manager.get_ai_settings() or {}
         except Exception:
             ai_settings = {}
+        # AI settings - hidden, fixed infra 20B/120B/Qwen, guard if widgets don't exist
         try:
-            base_url = str(ai_settings.get("server_base_url", "") or "").strip()
-            self.groq_base_url_input.setText(self._normalized_ai_server_url(base_url))
+            if hasattr(self, "groq_base_url_input"):
+                base_url = str(ai_settings.get("server_base_url", "") or "").strip()
+                self.groq_base_url_input.setText(self._normalized_ai_server_url(base_url))
         except Exception:
             pass
         try:
-            self.groq_model_input.setText(str(ai_settings.get("groq_model", "") or ""))
+            if hasattr(self, "groq_model_input"):
+                self.groq_model_input.setText(str(ai_settings.get("groq_model", "") or ""))
         except Exception:
             pass
         try:
-            self.groq_task_model_input.setText(str(ai_settings.get("task_model", "") or ""))
+            if hasattr(self, "groq_task_model_input"):
+                self.groq_task_model_input.setText(str(ai_settings.get("task_model", "") or ""))
         except Exception:
             pass
         # Add-in
@@ -925,6 +996,11 @@ class SettingsDialog(QDialog):
             )
         except Exception:
             pass
+        try:
+            if hasattr(self, "device_name_input") and self.device_name_input:
+                self.settings_manager.set_device_name(self.device_name_input.text())
+        except Exception:
+            pass
         
         # Editor settings
         editor_settings = {
@@ -949,26 +1025,29 @@ class SettingsDialog(QDialog):
             pass
         defaults["time_limit_enabled"] = bool(self.time_limit_enabled_default.isChecked())
         self.settings_manager.set_game_defaults(defaults)
+        # AI settings: hidden, keep fixed infra - only preserve existing values, don't overwrite from hidden UI
+        # Đảm bảo hạ tầng cố định: LIGHT 20B, HEAVY 120B, VISION Qwen 27B
         try:
             ai_settings = self.settings_manager.get_ai_settings() or {}
         except Exception:
             ai_settings = {}
+        # Only update if widgets actually exist (user could still edit via hidden tab if somehow shown)
         try:
-            ai_settings["server_base_url"] = self._normalized_ai_server_url(self.groq_base_url_input.text())
-        except Exception:
-            ai_settings["server_base_url"] = ""
-        try:
-            ai_settings["groq_model"] = str(self.groq_model_input.text() or "").strip()
-        except Exception:
-            ai_settings["groq_model"] = ""
-        try:
-            ai_settings["task_model"] = str(self.groq_task_model_input.text() or "").strip()
-        except Exception:
-            ai_settings["task_model"] = ""
-        try:
+            if hasattr(self, "groq_base_url_input"):
+                ai_settings["server_base_url"] = self._normalized_ai_server_url(self.groq_base_url_input.text())
+            # Enforce fixed models regardless of UI (user không được chỉnh)
+            ai_settings["groq_model"] = "openai/gpt-oss-20b"
+            ai_settings["task_model"] = "openai/gpt-oss-120b"
+            ai_settings["vision_model"] = "qwen/qwen3-27b"
             ai_settings["_user_set"] = True
+            ai_settings["_fixed_infra"] = True
         except Exception:
-            pass
+            try:
+                ai_settings["groq_model"] = "openai/gpt-oss-20b"
+                ai_settings["task_model"] = "openai/gpt-oss-120b"
+                ai_settings["vision_model"] = "qwen/qwen3-27b"
+            except Exception:
+                pass
         self.settings_manager.set_ai_settings(ai_settings)
         
         # Emit signal and close
@@ -992,6 +1071,27 @@ class SettingsDialog(QDialog):
         except Exception:
             pass
 
+    def _notify_addin_installed_win(self):
+        """Windows system notification after a fresh manual add-in install.
+
+        Deliberately NOT an in-app QMessageBox: the main window owns the
+        tray icon and the toast text, so just hand off to it when found.
+        If no main window is around, stay silent (the status label in
+        this dialog already shows the installed version).
+        """
+        try:
+            from PySide6.QtWidgets import QApplication
+            for w in QApplication.topLevelWidgets():
+                try:
+                    fn = getattr(w, "_notify_addin_installed", None)
+                    if callable(fn):
+                        fn()
+                        return
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
     def _install_ppt_addin_manual(self):
         try:
             if getattr(self, "_addin_install_running", False):
@@ -1011,6 +1111,18 @@ class SettingsDialog(QDialog):
                 from eduplay.core.ppt_vsto_addin_service import PptVstoAddinService
             except Exception:
                 PptVstoAddinService = None
+
+            # Was the add-in already installed before this click? A fresh
+            # install toasts once ("Đã cài Add-ins"); touching an
+            # already-installed add-in stays completely silent.
+            try:
+                if PptVstoAddinService is not None:
+                    _pre_status = PptVstoAddinService(self.settings_manager).detect_installed() or {}
+                    _was_installed = bool(_pre_status.get("installed"))
+                else:
+                    _was_installed = False
+            except Exception:
+                _was_installed = False
 
             def _do_install():
                 if PptVstoAddinService is None:
@@ -1042,9 +1154,14 @@ class SettingsDialog(QDialog):
                             "Installed v{version}",
                             version=str(result.get("version", "") or "").strip(),
                         ))
-                        title = I18n.t("settings.addin.install_done_title", lang)
-                        msg = I18n.t("settings.addin.install_done_desc", lang)
-                        QMessageBox.information(self, title, msg)
+                        # Fresh install only: one Windows toast, no in-app dialog.
+                        # Re-touching an installed add-in, declining, or failing
+                        # stays silent here (failures still warn below).
+                        if not _was_installed:
+                            try:
+                                self._notify_addin_installed_win()
+                            except Exception:
+                                pass
                     else:
                         self.addin_status_value.setText(self._t("settings.addin.status_install_failed", "Install failed"))
                         title = I18n.t("settings.addin.install_failed_title", lang)
@@ -1138,6 +1255,55 @@ class SettingsDialog(QDialog):
         except Exception:
             pass
     
+    def _on_open_log_folder(self):
+        """Mo thu muc chua crash.log de user gui bao loi."""
+        folder = ""
+        try:
+            import os as _os
+            from pathlib import Path as _Path
+
+            base = (_os.environ.get("LOCALAPPDATA") or "").strip()
+            if base:
+                cand = _Path(base) / "EduPlayStudio" / "logs"
+                try:
+                    cand.mkdir(parents=True, exist_ok=True)
+                except Exception:
+                    pass
+                if cand.is_dir():
+                    folder = str(cand)
+            if not folder:
+                try:
+                    from PySide6.QtCore import QStandardPaths
+
+                    docs = QStandardPaths.writableLocation(QStandardPaths.DocumentsLocation)
+                    if docs:
+                        cand2 = _Path(str(docs)) / "EduPlay" / "Settings" / "logs"
+                        try:
+                            cand2.mkdir(parents=True, exist_ok=True)
+                        except Exception:
+                            pass
+                        if cand2.is_dir():
+                            folder = str(cand2)
+                except Exception:
+                    pass
+        except Exception:
+            folder = ""
+        if not folder:
+            return
+        try:
+            if os.name == "nt":
+                os.startfile(folder)
+                return
+        except Exception:
+            pass
+        try:
+            from PySide6.QtCore import QUrl
+            from PySide6.QtGui import QDesktopServices
+
+            QDesktopServices.openUrl(QUrl.fromLocalFile(folder))
+        except Exception:
+            pass
+
     def _download_template(self):
         try:
             from PySide6.QtWidgets import QFileDialog
@@ -1270,9 +1436,12 @@ class SettingsDialog(QDialog):
             msg = "Are you sure you want to reset all settings to defaults?"
             done_title = "Settings Reset"
             done_msg = "Settings have been reset to defaults."
-        reply = QMessageBox.question(self, title, msg, QMessageBox.Yes | QMessageBox.No)
-        
-        if reply == QMessageBox.Yes:
+        from eduplay.ui.widgets.confirm_dialog import ask_confirm
+        try:
+            _confirm_lang = lang
+        except Exception:
+            _confirm_lang = "en"
+        if ask_confirm(self, title, msg, _confirm_lang):
             self.settings_manager.reset_to_defaults()
             self.load_settings()
             try:

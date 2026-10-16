@@ -162,7 +162,7 @@ class ThemeManager(QObject):
                 color: #FFFFFF;
             }}
 
-            QComboBox QAbstractItemView::item:hover:!selected {{
+            QComboBox QAbstractItemView::item:hover {{
                 background-color: {card_bg};
                 color: {input_text};
             }}

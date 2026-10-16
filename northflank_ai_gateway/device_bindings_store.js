@@ -103,6 +103,35 @@ class JsonFileDeviceBindingsStore {
     return bindings[deviceId];
   }
 
+  async deleteByDeviceId(deviceId) {
+    ensureDataDir(this.dataDir);
+    const bindings = readJsonFile(this.bindingsFile);
+    if (!bindings[deviceId]) {
+      return null;
+    }
+    const deleted = bindings[deviceId];
+    delete bindings[deviceId];
+    writeJsonFileAtomic(this.bindingsFile, bindings);
+    return deleted;
+  }
+
+  async deleteByMachineFingerprint(machineFingerprint) {
+    ensureDataDir(this.dataDir);
+    const bindings = readJsonFile(this.bindingsFile);
+    let count = 0;
+    for (const deviceId of Object.keys(bindings)) {
+      const b = bindings[deviceId];
+      if (b && b.machineFingerprint === machineFingerprint) {
+        delete bindings[deviceId];
+        count++;
+      }
+    }
+    if (count > 0) {
+      writeJsonFileAtomic(this.bindingsFile, bindings);
+    }
+    return count;
+  }
+
   describe() {
     return {
       type: "json",
@@ -229,6 +258,37 @@ class PostgresDeviceBindingsStore {
       [deviceId, lastSeenAt]
     );
     return toBindingRecord(result.rows[0]);
+  }
+
+  async deleteByDeviceId(deviceId) {
+    const result = await this.pool.query(
+      `
+        DELETE FROM ${this.tableName}
+        WHERE device_id = $1
+        RETURNING
+          device_id,
+          device_key_hash,
+          machine_fingerprint,
+          platform,
+          app_id,
+          created_at,
+          last_seen_at
+      `,
+      [deviceId]
+    );
+    return toBindingRecord(result.rows[0]);
+  }
+
+  async deleteByMachineFingerprint(machineFingerprint) {
+    const result = await this.pool.query(
+      `
+        DELETE FROM ${this.tableName}
+        WHERE machine_fingerprint = $1
+        RETURNING device_id
+      `,
+      [machineFingerprint]
+    );
+    return result.rowCount;
   }
 
   describe() {

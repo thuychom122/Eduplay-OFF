@@ -77,8 +77,8 @@ class LeftNavDrawer(QFrame):
         self.quick_section_label.setAlignment(Qt.AlignCenter)
         layout.addWidget(self.quick_section_label)
 
-        self.btn_recent = self._make_quick_btn("recent", "Recent", "recent")
-        self.btn_publish = self._make_quick_btn("publish", "Publish", "publish")
+        self.btn_recent = self._make_quick_btn("play_recent", "Play", "play")
+        self.btn_publish = self._make_quick_btn("screenshot", "Screenshot", "camera")
         self.btn_resume = self._make_quick_btn("resume", "Resume", "resume")
         self._quick_buttons = (self.btn_recent, self.btn_publish, self.btn_resume)
 
@@ -164,14 +164,12 @@ class LeftNavDrawer(QFrame):
     def _format_quick_label(self, text: str, compact: bool = False) -> str:
         raw = str(text or "").strip()
         mapping = {
-            "Mở gần đây": "Mở gần\nđây",
-            "Xuất bản nhanh": "Xuất bản\nnhanh",
-            "Tiếp tục chỉnh sửa": "Tiếp tục\nchỉnh sửa",
-            "Recent": "Recent",
-            "Quick publish": "Quick\npublish",
-            "Publish": "Quick\npublish",
-            "Resume editing": "Resume\nediting",
-            "Resume": "Resume\nediting",
+            "Mở dự án gần đây": "Mở dự án\ngần đây",
+            "Chơi dự án gần đây": "Chơi dự án\ngần đây",
+            "Chụp ảnh màn hình": "Chụp ảnh\nmàn hình",
+            "Open recent project": "Open recent\nproject",
+            "Play recent project": "Play recent\nproject",
+            "Screenshot": "Screenshot",
         }
         if raw in mapping:
             return mapping[raw]
@@ -191,29 +189,29 @@ class LeftNavDrawer(QFrame):
             projects = I18n.t("nav.projects", l)
             preview = I18n.t("nav.preview", l)
             quick_title = I18n.t("nav.quick_actions", l)
-            recent = I18n.t("home.quick.recent", l)
-            publish = I18n.t("home.quick.publish", l)
+            play_recent = I18n.t("home.quick.play", l)
+            screenshot = I18n.t("home.quick.screenshot", l)
             resume = I18n.t("home.quick.resume", l)
             tip_home = I18n.t("tooltip.leftnav.home", l)
             tip_projects = I18n.t("tooltip.leftnav.projects", l)
             tip_preview = I18n.t("tooltip.leftnav.preview", l)
-            tip_recent = I18n.t("tooltip.quick.recent", l)
-            tip_publish = I18n.t("tooltip.quick.publish", l)
+            tip_play_recent = I18n.t("tooltip.quick.play", l)
+            tip_screenshot = I18n.t("tooltip.quick.screenshot", l)
             tip_resume = I18n.t("tooltip.quick.resume", l)
         except Exception:
             home = "Home"
             projects = "Projects"
             preview = "Preview"
             quick_title = "Quick actions"
-            recent = "Recent"
-            publish = "Publish"
-            resume = "Resume"
+            play_recent = "Play recent project"
+            screenshot = "Screenshot"
+            resume = "Resume editing"
             tip_home = "Go to Home"
             tip_projects = "Browse projects"
             tip_preview = "Open Preview"
-            tip_recent = "Open a recent project"
-            tip_publish = "Quick export / publish"
-            tip_resume = "Resume current project"
+            tip_play_recent = "Play the most recent project"
+            tip_screenshot = "Take a screenshot (Snipping Tool)"
+            tip_resume = "Resume editing the current project"
         try:
             self.btn_home.setText(home)
             self.btn_home.setToolTip(tip_home if isinstance(tip_home, str) and tip_home != "tooltip.leftnav.home" else home)
@@ -236,8 +234,8 @@ class LeftNavDrawer(QFrame):
         except Exception:
             pass
         for btn, text in (
-            (getattr(self, "btn_recent", None), recent),
-            (getattr(self, "btn_publish", None), publish),
+            (getattr(self, "btn_recent", None), play_recent),
+            (getattr(self, "btn_publish", None), screenshot),
             (getattr(self, "btn_resume", None), resume),
         ):
             if not btn:
@@ -248,11 +246,11 @@ class LeftNavDrawer(QFrame):
             except Exception:
                 pass
         try:
-            self.btn_recent.setToolTip(tip_recent if isinstance(tip_recent, str) and tip_recent != "tooltip.quick.recent" else recent)
+            self.btn_recent.setToolTip(tip_play_recent if isinstance(tip_play_recent, str) and tip_play_recent != "tooltip.quick.play" else play_recent)
         except Exception:
             pass
         try:
-            self.btn_publish.setToolTip(tip_publish if isinstance(tip_publish, str) and tip_publish != "tooltip.quick.publish" else publish)
+            self.btn_publish.setToolTip(tip_screenshot if isinstance(tip_screenshot, str) and tip_screenshot != "tooltip.quick.screenshot" else screenshot)
         except Exception:
             pass
         try:
@@ -284,20 +282,23 @@ class LeftNavDrawer(QFrame):
 
     def _apply_quick_icon(self, btn: QToolButton):
         kind = str(btn.property("iconKind") or "")
-        if kind == "resume":
-            btn.setIcon(build_glyph_icon("edit", "#7F56D9", 18))
+        if kind == "camera":
+            btn.setIcon(build_glyph_icon("camera", "#7F56D9", 18))
+            return
+        if kind == "play":
+            btn.setIcon(build_glyph_icon("play", "#7F56D9", 18))
             return
         pix = build_line_icon_pixmap(kind, "#7F56D9", 18)
         btn.setIcon(QIcon(pix))
 
     def set_quick_context(self, has_current_project: bool):
         try:
+            self.btn_publish.setVisible(True)
+            self.btn_publish.setEnabled(True)
+        except Exception:
+            pass
+        try:
             self.btn_resume.setVisible(True)
-            if has_current_project:
-                self.btn_resume.setProperty("hasProject", "true")
-                self.btn_resume.setToolTip(self.btn_resume.toolTip() or self.btn_resume.text().replace("\n", " "))
-            else:
-                self.btn_resume.setProperty("hasProject", "false")
             self.btn_resume.setEnabled(True)
         except Exception:
             pass

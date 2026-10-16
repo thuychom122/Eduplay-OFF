@@ -307,7 +307,7 @@ class NewProjectScreen(QWidget):
                         background-color: #5B2BE1;
                         color: #FFFFFF;
                     }}
-                    QListView::item:hover:!selected {{
+                    QListView::item:hover {{
                         background-color: {icon_btn_hover};
                     }}
                     """

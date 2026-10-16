@@ -45,6 +45,25 @@ class PptVstoAddinService:
     ADDIN_INSTALL_DIRNAME = "EduPlayPowerPointAddin"
     OFFICE_APP = "PowerPoint"
 
+    def _hidden_kwargs(self) -> dict:
+        """Return subprocess kwargs that keep any console completely hidden."""
+        kw: dict = {}
+        if os.name == "nt":
+            try:
+                kw["creationflags"] = int(getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            except Exception:
+                pass
+            try:
+                si = subprocess.STARTUPINFO()  # type: ignore[attr-defined]
+                try:
+                    si.dwFlags |= int(getattr(subprocess, "STARTF_USESHOWWINDOW", 1))
+                except Exception:
+                    pass
+                kw["startupinfo"] = si
+            except Exception:
+                pass
+        return kw
+
     def __init__(self, settings_manager=None):
         self.settings_manager = settings_manager
 
@@ -83,7 +102,7 @@ class PptVstoAddinService:
         exe = "msiexec.exe"
         if not elevate or self._is_admin():
             try:
-                p = subprocess.run([exe, *args], capture_output=True, text=True, check=False)
+                p = subprocess.run([exe, *args], capture_output=True, text=True, check=False, **self._hidden_kwargs())
                 return int(p.returncode)
             except Exception:
                 return 1
@@ -99,6 +118,7 @@ class PptVstoAddinService:
                 capture_output=True,
                 text=True,
                 check=False,
+                **self._hidden_kwargs(),
             )
             return int(p.returncode)
         except Exception:
@@ -112,6 +132,7 @@ class PptVstoAddinService:
                 capture_output=True,
                 text=True,
                 check=False,
+                **self._hidden_kwargs(),
             )
             return int(p.returncode)
         except Exception:

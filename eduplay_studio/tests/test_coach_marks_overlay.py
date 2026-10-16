@@ -99,10 +99,16 @@ class TestCoachMarksOverlay(unittest.TestCase):
         overlay._reposition()
         bubble = overlay._bubbles[0]
 
-        # The bubble should sit below the card, not overlap it, and be
-        # horizontally centered with the card.
-        self.assertGreaterEqual(bubble.y(), card.geometry().bottom() + 10)
+        # The bubble should sit either below or above the card (ưu tiên trên cho đẹp), not overlap, and be centered.
+        is_below = bubble.y() >= card.geometry().bottom() + 10
+        is_above = bubble.y() + bubble.height() <= card.geometry().top() - 10
+        self.assertTrue(is_below or is_above, "bubble is not clearly above or below card")
+        if is_below:
+            self.assertEqual(overlay._arrow_dirs[0], "top")
+        else:
+            self.assertEqual(overlay._arrow_dirs[0], "bottom")
         self.assertLessEqual(bubble.y() + bubble.height(), parent.height() - 80)
+        self.assertGreaterEqual(bubble.y(), 10)
         bubble_center_x = bubble.x() + bubble.width() // 2
         card_center_x = card.geometry().center().x()
         self.assertLess(abs(bubble_center_x - card_center_x), 60)
@@ -124,12 +130,16 @@ class TestCoachMarksOverlay(unittest.TestCase):
         overlay._reposition()
 
         for i, (card, bubble) in enumerate(zip(cards, overlay._bubbles)):
-            self.assertGreaterEqual(
-                bubble.y(), card.geometry().bottom() + 10, f"card {i} bubble is not below card"
-            )
+            is_below = bubble.y() >= card.geometry().bottom() + 10
+            is_above = bubble.y() + bubble.height() <= card.geometry().top() - 10
+            self.assertTrue(is_below or is_above, f"card {i} bubble is not above or below card")
+            # Arrow hướng đúng: dưới -> top, trên -> bottom
+            expected_dir = "top" if is_below else "bottom"
+            self.assertEqual(overlay._arrow_dirs[i], expected_dir, f"card {i} arrow dir wrong")
             self.assertLessEqual(
                 bubble.y() + bubble.height(), parent.height() - 80, f"card {i} bubble hits footer area"
             )
+            self.assertGreaterEqual(bubble.y(), 10, f"card {i} bubble too high")
             bubble_center_x = bubble.x() + bubble.width() // 2
             card_center_x = card.geometry().center().x()
             self.assertLess(

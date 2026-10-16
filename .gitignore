@@ -24,3 +24,8 @@ node_modules/
 *.log
 .DS_Store
 Thumbs.db
+
+# Thu muc sinh tu dong / ban tai ve (khong dua vao repo)
+eduplay_studio/eduplay/preview_edge_profile/
+.firebase_hosting_stage_modern/
+WWBM-master/

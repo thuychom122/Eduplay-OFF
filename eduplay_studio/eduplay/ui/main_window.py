@@ -27,7 +27,79 @@ from eduplay.ui.widgets.chat_widget import ChatWidget
 from eduplay.ui.widgets.command_palette_dialog import CommandPaletteDialog
 from eduplay.ui.widgets.settings_dialog import SettingsDialog
 from eduplay.ui.widgets.left_nav_drawer import LeftNavDrawer, LeftEdgeHotZone
-from eduplay.ui.icon_factory import build_standard_ui_icon, build_app_action_icon
+from eduplay.ui.icon_factory import build_standard_ui_icon, build_app_action_icon, build_emoji_icon
+from eduplay.ui.motion import motion_enabled as _motion_enabled
+from eduplay.ui.motion import ms as _motion_ms
+from eduplay.ui.motion import fade_overlay as _motion_fade_overlay
+
+
+def _motion_overlay_color() -> str:
+    """Mau nen cua app de overlay phu doi mau voi theme dang dung."""
+    try:
+        from eduplay.core.settings_manager import SettingsManager
+
+        theme = SettingsManager().get_theme() or "dark"
+    except Exception:
+        theme = "dark"
+    return "#0F172A" if str(theme) == "dark" else "#F8FAFC"
+
+
+def _run_log(message: str) -> None:
+    """Ghi breadcrumb ra file run.log de truy vet crash (console co the mat).
+
+    File: %LOCALAPPDATA%/EduPlayStudio/logs/run.log (fallback Documents hoac
+    temp). Tu xoay file khi > 512KB. Khong bao gio nem.
+    """
+    try:
+        import datetime as _dt
+
+        text = str(message or "").strip()
+        if not text:
+            return
+        folder = ""
+        try:
+            base = (os.environ.get("LOCALAPPDATA") or "").strip()
+            if base:
+                folder = os.path.join(base, "EduPlayStudio", "logs")
+        except Exception:
+            folder = ""
+        if not folder:
+            try:
+                import tempfile as _tf
+
+                folder = os.path.join(_tf.gettempdir(), "EduPlayStudio", "logs")
+            except Exception:
+                return
+        try:
+            os.makedirs(folder, exist_ok=True)
+        except Exception:
+            return
+        path = os.path.join(folder, "run.log")
+        try:
+            if os.path.exists(path) and os.path.getsize(path) > 512 * 1024:
+                try:
+                    old = os.path.join(folder, "run.old.log")
+                    if os.path.exists(old):
+                        os.remove(old)
+                except Exception:
+                    pass
+                try:
+                    os.rename(path, os.path.join(folder, "run.old.log"))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            stamp = _dt.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            stamp = ""
+        try:
+            with open(path, "a", encoding="utf-8", errors="replace") as f:
+                f.write(f"[{stamp}] {text}\n")
+        except Exception:
+            pass
+    except Exception:
+        pass
 
 
 class _BackgroundWorker(QObject):
@@ -38,23 +110,39 @@ class _BackgroundWorker(QObject):
         self._fn = fn
         self._args = args
         self._kwargs = kwargs
+        try:
+            self._label = str(getattr(fn, "__name__", "") or "")[:80]
+        except Exception:
+            self._label = ""
 
     def run(self):
         try:
             print("[Export] Background worker started")
         except Exception:
             pass
+        _run_log(f"worker started: {self._label}")
         result = None
         error = None
         try:
             result = self._fn(*self._args, **self._kwargs)
         except Exception as e:
             error = e
+            try:
+                import traceback as _tb
+
+                _run_log(f"worker ERROR in {self._label}: {e}\n{_tb.format_exc()[-3000:]}")
+            except Exception:
+                pass
         try:
             print("[Export] Background worker finished, error:", error)
         except Exception:
             pass
-        self.finished.emit(result, error)
+        _run_log(f"worker finished: {self._label} error={error!r}")
+        try:
+            self.finished.emit(result, error)
+        except Exception as e_emit:
+            _run_log(f"worker emit FAILED {self._label}: {e_emit!r}")
+        _run_log(f"worker emit done: {self._label}")
 
 
 class _StartupBoundaryWipeEffect(QGraphicsEffect):
@@ -161,6 +249,76 @@ class _StartupLeftToRightWipeEffect(QGraphicsEffect):
         painter.restore()
 
 
+# Per-screen first-visit guides: screen -> (MainWindow screen attribute,
+# [(widget attribute on that screen, i18n key), ...]). Widget attributes
+# may use dots for nested lookups (e.g. "left_panel.add_btn"). Widgets
+# that are missing or hidden are skipped; a screen with no visible marks
+# simply tries again on the next visit (its `seen` flag is only set after
+# an overlay actually finishes). Texts reuse the authored onboarding.*
+# keys; guide.* keys fill the few widgets that have no onboarding.* text.
+_SCREEN_GUIDE_SPECS = {
+    "browser": ("browser_screen", [
+        ("back_btn", "onboarding.browser.edit.back"),
+        ("search_input", "onboarding.browser.edit.search"),
+        ("filter_combo", "onboarding.browser.edit.filter"),
+        ("open_btn", "guide.browser.2"),
+        ("rename_btn", "guide.browser.4"),
+        ("del_btn", "guide.browser.5"),
+        ("menu_btn", "guide.browser.6"),
+        ("import_btn", "onboarding.browser.edit.import"),
+        ("refresh_btn", "onboarding.browser.edit.refresh"),
+    ]),
+    "new_project": ("new_project_screen", [
+        ("back_btn", "onboarding.new_project.back"),
+        ("name_input", "onboarding.new_project.name"),
+        ("description_input", "onboarding.new_project.desc"),
+        ("game_type_dropdown", "onboarding.new_project.type"),
+        ("create_btn", "onboarding.new_project.create"),
+        ("cancel_btn", "guide.new_project.5"),
+    ]),
+    "player": ("player_screen", [
+        ("back_btn", "onboarding.player.list.back"),
+        ("project_combo", "guide.player.1"),
+        ("open_file_btn", "guide.player.5"),
+        ("open_btn", "guide.player.2"),
+        ("reload_btn", "guide.player.3"),
+    ]),
+    "editor": ("editor_screen", [
+        ("back_btn", "onboarding.editor.header.back"),
+        ("save_btn", "onboarding.editor.header.save"),
+        ("preview_btn", "onboarding.editor.header.preview"),
+        ("export_web_btn", "onboarding.editor.header.export_web"),
+        ("export_html_btn", "onboarding.editor.header.export_html"),
+        ("left_panel.add_btn", "onboarding.editor.questions.add"),
+        ("left_panel.import_btn", "onboarding.editor.questions.import"),
+        ("left_panel.questions_list", "onboarding.editor.questions.list"),
+        ("left_panel.tab_widget", "onboarding.editor.questions.tabs"),
+    ]),
+    "editor_quiz": ("editor_quiz_screen", [
+        ("back_btn", "onboarding.editor.header.back"),
+        ("save_btn", "onboarding.editor.header.save"),
+        ("preview_btn", "onboarding.editor.header.preview"),
+        ("export_web_btn", "onboarding.editor.header.export_web"),
+        ("export_html_btn", "onboarding.editor.header.export_html"),
+        ("left_panel.add_btn", "onboarding.editor.questions.add"),
+        ("left_panel.import_btn", "onboarding.editor.questions.import"),
+        ("left_panel.questions_list", "onboarding.editor.questions.list"),
+        ("left_panel.tab_widget", "onboarding.editor.questions.tabs"),
+    ]),
+    "editor_fishing": ("editor_fishing_screen", [
+        ("back_btn", "onboarding.editor.header.back"),
+        ("save_btn", "onboarding.editor.header.save"),
+        ("preview_btn", "onboarding.editor.header.preview"),
+        ("export_web_btn", "onboarding.editor.header.export_web"),
+        ("export_html_btn", "onboarding.editor.header.export_html"),
+        ("left_panel.add_btn", "onboarding.editor.questions.add"),
+        ("left_panel.import_btn", "onboarding.editor.questions.import"),
+        ("left_panel.questions_list", "onboarding.editor.questions.list"),
+        ("left_panel.tab_widget", "onboarding.editor.questions.tabs"),
+    ]),
+}
+
+
 class MainWindow(QMainWindow):
     """Main application window"""
     
@@ -171,6 +329,12 @@ class MainWindow(QMainWindow):
         self.asset_manager = asset_manager
         self.settings_manager = settings_manager
         self.import_service = import_service
+        # Memory manager: tóm tắt sau mỗi phiên, giữ 5 tin gần nhất để giảm token
+        try:
+            from eduplay.core.memory_manager import MemoryManager
+            self.memory_manager = MemoryManager(settings_manager)
+        except Exception:
+            self.memory_manager = None
         self._background_threads = []
         self._loading_overlay = None
         self._loading_label = None
@@ -192,6 +356,7 @@ class MainWindow(QMainWindow):
         self._startup_animation_requested = False
         self._home_header_title_anim = None
         self._chat_request_seq = 0
+        self._pending_import_file = None
         self.setWindowTitle("EduPlay Studio")
         self.setMinimumSize(900, 600)
         try:
@@ -276,6 +441,43 @@ class MainWindow(QMainWindow):
             self.chat_widget.width_mode_changed.connect(self.on_chat_width_changed)
             self.chat_widget.detail_level_changed.connect(self.on_chat_detail_changed)
             self._chat_detail_level = 'chuẩn'
+        except Exception:
+            pass
+        # Wrap chat_widget.add_message để tự động lưu AI response vào MemoryManager và ẩn tin hệ thống/lệnh
+        try:
+            _orig_add = self.chat_widget.add_message
+            def _wrapped_add(sender, message, message_type="user"):
+                # Ẩn tin hệ thống/lệnh: chỉ để lại tin phản hồi AI
+                try:
+                    s_sender = str(sender or "").strip().lower()
+                    s_msg = str(message or "")
+                    # các tin hệ thống kiểu TOOL_ERROR, Missing, Thiếu, Không tìm thấy, Đã nhận diện URL... -> ẩn
+                    hide_keywords = ["tool_error", "missing", "thiếu", "không tìm thấy", "đã nhận diện", "invalid", "failed to", "args must be", "tool:", "command:"]
+                    low_msg = s_msg.lower()
+                    if s_sender == "system" and any(kw in low_msg for kw in hide_keywords):
+                        print(f"[HIDDEN SYSTEM] {s_msg[:120]}")
+                        return None
+                    # Ẩn cả tin System chứa lệnh JSON
+                    if s_sender == "system" and ("{" in s_msg and "}" in s_msg) and any(kw in low_msg for kw in ["question_id", "question_number", "search_image", "delete_question"]):
+                        print(f"[HIDDEN SYSTEM COMMAND] {s_msg[:80]}")
+                        return None
+                except Exception:
+                    pass
+                try:
+                    res = _orig_add(sender, message, message_type)
+                except Exception:
+                    res = None
+                try:
+                    if getattr(self, "memory_manager", None):
+                        mt = str(message_type or "").strip().lower()
+                        # session chi tinh tin user (tin AI khong dem) -> khong luu o day;
+                        # user da duoc luu truoc khi goi AI. Giu goi de tuong thich.
+                        if mt in ("ai", "assistant", "edubot"):
+                            self.memory_manager.add_ai_message(message)
+                except Exception:
+                    pass
+                return res
+            self.chat_widget.add_message = _wrapped_add
         except Exception:
             pass
 
@@ -485,15 +687,7 @@ class MainWindow(QMainWindow):
                         return
                     if result.get("installed"):
                         try:
-                            from eduplay.core.i18n import I18n
-                            lang = self.settings_manager.get_language() if self.settings_manager else "en"
-                            title = I18n.t("settings.addin.autoinstall_notify_title", lang)
-                            msg = I18n.t("settings.addin.autoinstall_notify_desc", lang)
-                        except Exception:
-                            title = "PowerPoint Add-in"
-                            msg = "PowerPoint add-in installed."
-                        try:
-                            self.show_system_notification(title, msg, "success")
+                            self._notify_addin_installed()
                         except Exception:
                             pass
                         try:
@@ -849,6 +1043,16 @@ class MainWindow(QMainWindow):
                 self.chat_widget.apply_theme()
         except Exception:
             pass
+        try:
+            _t2 = self.settings_manager.get_theme() if self.settings_manager else 'light'
+            _cp2 = getattr(self, "_command_palette", None)
+            if _cp2 is not None and hasattr(_cp2, "apply_theme"):
+                _cp2.apply_theme(_t2)
+            _cd2 = getattr(self, "_calculator_dialog", None)
+            if _cd2 is not None and hasattr(_cd2, "apply_theme"):
+                _cd2.apply_theme(_t2)
+        except Exception:
+            pass
     
     def create_screens(self):
         """Create all application screens"""
@@ -912,6 +1116,14 @@ class MainWindow(QMainWindow):
         self.home_screen.import_questions_clicked.connect(self._import_questions_from_home)
         self.home_screen.quick_publish_clicked.connect(self._quick_publish_from_home)
         self.home_screen.resume_clicked.connect(self._resume_project_from_home)
+        try:
+            self.home_screen.play_recent_clicked.connect(self._play_recent_project_from_home)
+        except Exception:
+            pass
+        try:
+            self.home_screen.screenshot_clicked.connect(self._take_screenshot_win)
+        except Exception:
+            pass
         self.home_screen.chat_toggled.connect(self.show_chat)
         self.home_screen.help_requested.connect(self.show_help)
         self.home_screen.settings_requested.connect(self.show_settings)
@@ -920,12 +1132,11 @@ class MainWindow(QMainWindow):
         
         # New project screen connections
         self.new_project_screen.project_created.connect(self.on_project_created)
-        self.new_project_screen.back_clicked.connect(
-            lambda: self.show_screen("home")
-        )
-        
+        self.new_project_screen.back_clicked.connect(self._on_new_project_back)
+
         # Browser screen connections
         self.browser_screen.project_selected.connect(self.on_project_selected)
+        self.browser_screen.import_questions_to_new.connect(self._on_import_questions_to_new)
         self.browser_screen.back_clicked.connect(
             lambda: self.show_screen("home")
         )
@@ -956,6 +1167,69 @@ class MainWindow(QMainWindow):
             self._command_palette_shortcut.activated.connect(self.show_command_palette)
         except Exception:
             self._command_palette_shortcut = None
+        # SỬA 2026-09-19: phím tắt Tính toán nhanh Ctrl+T (offline, đúng 100%)
+        try:
+            self._calc_shortcut = QShortcut(QKeySequence("Ctrl+T"), self)
+            self._calc_shortcut.setContext(Qt.ApplicationShortcut)
+            self._calc_shortcut.activated.connect(self.show_calculator_dialog)
+        except Exception:
+            self._calc_shortcut = None
+
+    def show_calculator_dialog(self):
+        """Hộp thoại Tính toán nhanh (offline, theo theme light/dark). Nhập biểu thức -> Enter ra kết quả."""
+        try:
+            lang = self.settings_manager.get_language() if self.settings_manager else "en"
+        except Exception:
+            lang = "en"
+        try:
+            theme = self.settings_manager.get_theme() if self.settings_manager else "light"
+        except Exception:
+            theme = "light"
+        try:
+            from eduplay.ui.widgets.calculator_dialog import CalculatorDialog
+            dlg = getattr(self, "_calculator_dialog", None)
+            if dlg is None or getattr(dlg, "_lang", "en") != lang:
+                dlg = CalculatorDialog(self, lang=lang, theme=theme)
+                self._calculator_dialog = dlg
+            else:
+                try:
+                    dlg._lang = lang
+                except Exception:
+                    pass
+            try:
+                dlg.apply_theme(theme)
+            except Exception:
+                pass
+            try:
+                x = max(24, int((self.width() - 480) / 2))
+                y = max(24, int(self.height() * 0.25))
+                dlg.move(self.mapToGlobal(QPoint(x, y)))
+            except Exception:
+                pass
+            expr = dlg.open_and_focus()
+            if not expr:
+                return
+            try:
+                from eduplay.core.ai_tool_payloads import safe_calculate as _sc
+                _ok, _clean, _res = _sc(expr)
+            except Exception as _e:
+                _ok, _clean, _res = (False, expr, str(_e))
+            try:
+                self.show_chat()
+            except Exception:
+                pass
+            if _ok:
+                if lang == "vi":
+                    self.chat_widget.set_ai_response(f"tính {expr} → kết quả: {_res}")
+                else:
+                    self.chat_widget.set_ai_response(f"{expr} = {_res}")
+            else:
+                if lang == "vi":
+                    self.chat_widget.set_ai_response(f"Mình chưa tính được '{expr}': {_res}. Ví dụ: 'tính 12x8:4' (dùng x thay *, : thay /).")
+                else:
+                    self.chat_widget.set_ai_response(f"Couldn't calculate '{expr}': {_res}.")
+        except Exception:
+            pass
 
     def _build_command_palette_items(self) -> list[dict]:
         try:
@@ -982,14 +1256,22 @@ class MainWindow(QMainWindow):
         except Exception:
             lang = "en"
         try:
+            theme = self.settings_manager.get_theme() if self.settings_manager else "light"
+        except Exception:
+            theme = "light"
+        try:
             items = self._build_command_palette_items()
             dlg = getattr(self, "_command_palette", None)
             if dlg is None or getattr(dlg, "_lang", "en") != lang:
-                dlg = CommandPaletteDialog(items, self, lang=lang)
+                dlg = CommandPaletteDialog(items, self, lang=lang, theme=theme)
                 dlg.item_triggered.connect(self._handle_command_palette_item)
                 self._command_palette = dlg
             else:
                 dlg.set_items(items)
+            try:
+                dlg.apply_theme(theme)
+            except Exception:
+                pass
             try:
                 dlg.adjustSize()
             except Exception:
@@ -1143,6 +1425,95 @@ class MainWindow(QMainWindow):
             self._quick_publish_from_home()
         elif key == "resume":
             self._resume_project_from_home()
+        elif key == "play_recent":
+            self._play_recent_project_from_home()
+        elif key == "screenshot":
+            self._take_screenshot_win()
+
+    def _play_recent_project_from_home(self):
+        """Open the Play player with the most recently opened project."""
+        try:
+            recent = self.settings_manager.get_recent_projects() if self.settings_manager else []
+        except Exception:
+            recent = []
+        recent = [it for it in (recent or []) if isinstance(it, dict) and str(it.get("id") or "").strip()]
+        project_data = None
+        for item in recent:
+            try:
+                project_data = self._load_project_by_id(item.get("id", ""))
+            except Exception:
+                project_data = None
+            if project_data:
+                break
+        if not project_data:
+            try:
+                from eduplay.core.i18n import I18n
+                try:
+                    lang = self.settings_manager.get_language() if self.settings_manager else "en"
+                except Exception:
+                    lang = "en"
+                if not recent:
+                    title = I18n.t("player.no_projects", lang) if I18n else "No recent project"
+                    msg = I18n.t("player.no_project_desc", lang) if I18n else "No project has been opened yet."
+                else:
+                    title = I18n.t("player.not_found_title", lang) if I18n else "Project not found"
+                    msg = I18n.t("player.not_found_desc", lang) if I18n else "Recent projects were deleted or moved."
+                QMessageBox.information(self, title, msg)
+            except Exception:
+                pass
+            try:
+                self.show_screen("browser")
+            except Exception:
+                pass
+            return
+        try:
+            self.show_screen("player")
+        except Exception:
+            pass
+        try:
+            screen = getattr(self, "player_screen", None)
+            if screen is not None:
+                try:
+                    screen._set_selected_project({"id": project_data.get("id", "")})
+                except Exception:
+                    pass
+                screen.load_project_game(project_data)
+        except Exception:
+            pass
+
+    def _launch_snipping_overlay(self):
+        """Open the Windows Snipping Tool overlay (like Win+Shift+S)."""
+        if os.name != "nt":
+            return
+        try:
+            os.startfile("ms-screenclip:")
+            return
+        except Exception:
+            pass
+        try:
+            import subprocess
+            subprocess.Popen(["SnippingTool.exe", "/clip"])
+        except Exception:
+            pass
+
+    def _take_screenshot_win(self):
+        """Minimize EduPlay Studio first, then open Snipping Tool."""
+        try:
+            win = self.window() or self
+        except Exception:
+            win = self
+        try:
+            win.showMinimized()
+        except Exception:
+            pass
+        try:
+            from PySide6.QtCore import QTimer
+            QTimer.singleShot(450, self._launch_snipping_overlay)
+        except Exception:
+            try:
+                self._launch_snipping_overlay()
+            except Exception:
+                pass
 
     def _init_left_nav_drawer(self):
         self._left_nav_drawer = LeftNavDrawer(self)
@@ -1282,7 +1653,7 @@ class MainWindow(QMainWindow):
         except Exception:
             effect = None
         anim = QPropertyAnimation(self._left_nav_drawer, b"pos", self)
-        anim.setDuration(220)
+        anim.setDuration(_motion_ms(220))
         anim.setEasingCurve(QEasingCurve.InOutCubic)
         try:
             anim.setStartValue(self._left_nav_drawer.pos())
@@ -1292,7 +1663,7 @@ class MainWindow(QMainWindow):
         op_anim = None
         if effect is not None:
             op_anim = QPropertyAnimation(effect, b"opacity", self)
-            op_anim.setDuration(180 if hide_after else 200)
+            op_anim.setDuration(_motion_ms(180 if hide_after else 200))
             op_anim.setEasingCurve(QEasingCurve.OutCubic if not hide_after else QEasingCurve.InCubic)
             try:
                 op_anim.setStartValue(float(effect.opacity()))
@@ -1429,6 +1800,12 @@ class MainWindow(QMainWindow):
                 self._refresh_active_screen_polish()
         except Exception:
             self._refresh_active_screen_polish()
+        # Per-screen first-visit guide (delayed so the layout settles).
+        try:
+            from PySide6.QtCore import QTimer as _GuideTimer
+            _GuideTimer.singleShot(600, lambda _sn=screen_name: self._maybe_show_screen_guide(_sn))
+        except Exception:
+            pass
 
     def showEvent(self, event):
         try:
@@ -1526,42 +1903,184 @@ class MainWindow(QMainWindow):
             self.stacked_widget.setCurrentIndex(index)
             self._finalize_screen_switch(screen_name)
             return
-        # Avoid transition lag/jump on any transition involving Home.
-        if current_index == 0 or index == 0:
-            self.stacked_widget.setCurrentIndex(index)
-            self._finalize_screen_switch(screen_name)
+        # Chuyen man hinh: dung MOT lop mau phu fade (re) thay vi fade ca
+        # stacked widget. Ap dung cho MOI duong ke ca qua Trang chu - truoc
+        # day duong nay khong co hieu ung nên kiem cam rat gap.
+        try:
+            _overlay, _anim = _motion_fade_overlay(
+                self.stacked_widget, _motion_overlay_color(), 150, 120
+            )
+            self._screen_fade_overlay = _overlay
+            self._screen_fade_anim = _anim
+        except Exception:
+            self._screen_fade_overlay = None
+            self._screen_fade_anim = None
+        self.stacked_widget.setCurrentIndex(index)
+        self._finalize_screen_switch(screen_name)
+        try:
+            if self._screen_fade_anim is not None:
+                self._screen_fade_anim.start()
+        except Exception:
+            pass
+        return
+    
+    def _on_new_project_back(self):
+        """Back/cancel from the new-project form: discard any pending import file, go home."""
+        try:
+            self._pending_import_file = None
+        except Exception:
+            pass
+        try:
+            self.show_screen("home")
+        except Exception:
+            pass
+
+    def _on_import_questions_to_new(self, file_path: str):
+        """Browser 'Nhập' button: remember the question file, prefill the
+        new-project form with the file name, and show the form."""
+        file_path = str(file_path or "").strip()
+        if not file_path:
             return
         try:
-            effect = QGraphicsOpacityEffect(self.stacked_widget)
-            self.stacked_widget.setGraphicsEffect(effect)
-            anim = QPropertyAnimation(effect, b"opacity", self)
-            anim.setDuration(140)
-            anim.setStartValue(1.0)
-            anim.setEndValue(0.18)
-            anim.setEasingCurve(QEasingCurve.InOutQuad)
-            self._switch_effect = effect
-            self._switch_anim = anim
-            def _switch():
-                if self.stacked_widget.graphicsEffect() is not effect:
-                    return
-                self.stacked_widget.setCurrentIndex(index)
-                self._finalize_screen_switch(screen_name)
-                anim2 = QPropertyAnimation(effect, b"opacity", self)
-                anim2.setDuration(180)
-                anim2.setStartValue(0.18)
-                anim2.setEndValue(1.0)
-                anim2.setEasingCurve(QEasingCurve.OutCubic)
-                anim2.finished.connect(
-                    lambda: self.stacked_widget.setGraphicsEffect(None)
-                )
-                anim2.start()
-                self._switch_anim2 = anim2
-            anim.finished.connect(_switch)
-            anim.start()
+            self._pending_import_file = file_path
         except Exception:
-            self.stacked_widget.setCurrentIndex(index)
-            self._finalize_screen_switch(screen_name)
-    
+            pass
+        try:
+            import os as _os
+            stem = _os.path.splitext(_os.path.basename(file_path))[0].strip()
+            if stem and hasattr(self.new_project_screen, "name_input"):
+                self.new_project_screen.name_input.setText(stem)
+        except Exception:
+            pass
+        try:
+            self.show_screen("new_project")
+        except Exception:
+            pass
+
+    def auto_renew_expiring_links(self):
+        """Tu gia han cac link sap het han (<3 ngay) luc mo app (chay nen).
+
+        Chi hien thong bao khi co link duoc gia han, khong chan UI.
+        """
+        try:
+            from eduplay.core.export_service import ExportService
+
+            def _task():
+                try:
+                    svc = ExportService()
+                    return svc.auto_renew_soon_expiring(
+                        ExportService.DATABASE_URL, threshold_days=3, limit=20
+                    )
+                except Exception as e:
+                    return {"ok": False, "renewed": [], "error": str(e)}
+
+            def _done(result, error):
+                try:
+                    renewed = []
+                    if isinstance(result, dict):
+                        renewed = list(result.get("renewed") or [])
+                    if not renewed:
+                        return
+                    lang = "en"
+                    try:
+                        from eduplay.core.i18n import I18n as _I18nRe
+                        lang = self.settings_manager.get_language() if self.settings_manager else "en"
+                        title = _I18nRe.t("publish.autorenew_title", lang)
+                        if not title or title == "publish.autorenew_title":
+                            raise ValueError("i18n-missing")
+                        names = ", ".join(f"\"{r.get('name', '')}\"" for r in renewed[:5])
+                        if len(renewed) > 5:
+                            names += "..."
+                        msg = _I18nRe.t("publish.autorenew_message", lang, count=len(renewed), names=names)
+                        if not msg or msg == "publish.autorenew_message":
+                            raise ValueError("i18n-missing")
+                    except Exception:
+                        if lang == "vi":
+                            title = "Đã tự gia hạn link"
+                            msg = f"Đã tự gia hạn {len(renewed)} link sắp hết hạn: {names}."
+                        else:
+                            title = "Links auto-renewed"
+                            msg = f"Auto-renewed {len(renewed)} soon-expiring link(s): {names}."
+                    try:
+                        self.show_system_notification(title, msg, "success")
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+
+            self._run_background_task(_task, _done, None, "default")
+        except Exception:
+            pass
+
+    def maybe_warn_duplicate_project_names(self):
+        """Quet 1 lan khi mo app: canh bao neu da co project trung ten tren may.
+
+        Chi hien lai khi danh sach trung thay doi (luu signature da xac nhan).
+        """
+        try:
+            pm = self.project_manager
+            if pm is None:
+                return
+            groups = pm.find_duplicate_project_names() or []
+            if not groups:
+                return
+            import json as _json
+
+            try:
+                sig = _json.dumps(groups, ensure_ascii=False, sort_keys=True)
+            except Exception:
+                sig = ""
+            try:
+                acked = str((self.settings_manager.get("duplicate_names_ack", "") if self.settings_manager else "") or "")
+            except Exception:
+                acked = ""
+            if sig and sig == acked:
+                return
+            try:
+                lang = self.settings_manager.get_language() if self.settings_manager else "en"
+            except Exception:
+                lang = "en"
+            names = ", ".join(f"\"{g.get('name', '')}\" ({g.get('count', 0)})" for g in groups[:8])
+            if len(groups) > 8:
+                names += "..."
+            try:
+                from eduplay.core.i18n import I18n as _I18nScan
+                title = _I18nScan.t("project.dup_scan_title", lang)
+                if not title or title == "project.dup_scan_title":
+                    raise ValueError("i18n-missing")
+                msg = _I18nScan.t("project.dup_scan_message", lang, count=len(groups), names=names)
+                if not msg or msg == "project.dup_scan_message":
+                    raise ValueError("i18n-missing")
+            except Exception:
+                if lang == "vi":
+                    title = "Trùng tên dự án"
+                    msg = (
+                        f"Máy này đang có {len(groups)} tên bị dùng cho nhiều dự án: {names}.\n\n"
+                        "Các dự án trùng tên sẽ tranh nhau 1 link khi xuất bản. "
+                        "Hãy vào Duyệt dự án và đổi tên để mỗi dự án 1 tên riêng."
+                    )
+                else:
+                    title = "Duplicate project names"
+                    msg = (
+                        f"This machine has {len(groups)} names shared by multiple projects: {names}.\n\n"
+                        "Projects with the same name compete for one publish link. "
+                        "Please open Browse projects and rename them so each project has a unique name."
+                    )
+            try:
+                QMessageBox.warning(self, title, msg)
+            except Exception:
+                try:
+                    self._show_message(title, msg, "warning")
+                except Exception:
+                    pass
+            try:
+                if sig and self.settings_manager:
+                    self.settings_manager.set("duplicate_names_ack", sig)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def on_project_created(self, project_data: dict):
         """Handle project creation"""
         # Persist project using ProjectManager and then load into appropriate editor
@@ -1571,7 +2090,38 @@ class MainWindow(QMainWindow):
             name = project_data.get("name", "Untitled Project")
             description = project_data.get("description", "")
             game_type = project_data.get("game_type", "quiz_classic")
-            created = pm.create_project(name, description, game_type)
+            try:
+                created = pm.create_project(name, description, game_type)
+            except ValueError as e_dup:
+                try:
+                    from eduplay.core.i18n import I18n as _I18nDup
+                    _dup_lang = self.settings_manager.get_language() if self.settings_manager else "en"
+                    _dup_title = _I18nDup.t("project.duplicate_title", _dup_lang)
+                    try:
+                        dup_msg = _I18nDup.t("project.duplicate_message", _dup_lang, name=str(name or "").strip())
+                    except Exception:
+                        dup_msg = str(e_dup)
+                    if not dup_msg:
+                        dup_msg = str(e_dup)
+                except Exception:
+                    _dup_title = "Duplicate name"
+                    try:
+                        dup_msg = str(e_dup) or "Duplicate project name."
+                    except Exception:
+                        dup_msg = "Duplicate project name."
+                try:
+                    self._show_message(_dup_title, dup_msg, "warning")
+                except Exception:
+                    pass
+                try:
+                    self.show_system_notification(_dup_title, dup_msg, "warning")
+                except Exception:
+                    pass
+                try:
+                    self.show_screen("new_project")
+                except Exception:
+                    pass
+                return
             cfg = project_data.get("game_config")
             if cfg:
                 # Normalize textual game type to internal value
@@ -1587,11 +2137,87 @@ class MainWindow(QMainWindow):
                     self.settings_manager.add_recent_project(created.get("id",""), created.get("name",""))
             except Exception:
                 pass
+            # Auto-import questions from a file picked in the browser screen (if any)
             try:
-                self._sync_home_quick_actions()
+                pending = str(getattr(self, "_pending_import_file", "") or "").strip()
+            except Exception:
+                pending = ""
+            try:
+                self._pending_import_file = None
             except Exception:
                 pass
-            self._open_editor_for_project(created)
+            imported_count = 0
+            import_error = ""
+            if pending:
+                try:
+                    svc = self.import_service
+                    if svc is None:
+                        from eduplay.core.import_service import ImportService
+                        svc = ImportService()
+                    print(f"[IMPORT-TO-NEW] importing {pending}")
+                    questions = svc.import_from_file(pending) or []
+                    print(f"[IMPORT-TO-NEW] parsed {len(questions)} questions")
+                except Exception as e:
+                    questions = []
+                    import_error = str(e)[:150]
+                    print(f"[IMPORT-TO-NEW] failed: {import_error}")
+                try:
+                    game_type = str((created or {}).get("game_type") or "").strip().lower()
+                except Exception:
+                    game_type = ""
+                try:
+                    pm.set_current_project(created)
+                except Exception:
+                    pass
+                for q in questions or []:
+                    if not isinstance(q, dict):
+                        continue
+                    try:
+                        if game_type == "quiz_millionaire":
+                            qt = str(q.get("type") or "").strip().lower()
+                            if qt != "multiple_choice":
+                                continue
+                            opts = q.get("options") or []
+                            if not isinstance(opts, list) or len(opts) < 2:
+                                continue
+                    except Exception:
+                        pass
+                    try:
+                        if pm.add_question(q):
+                            imported_count += 1
+                    except Exception:
+                        continue
+                try:
+                    created = pm.get_current_project() or created
+                except Exception:
+                    pass
+                if pending:
+                    try:
+                        if imported_count:
+                            self.show_system_notification(
+                                "Nhập câu hỏi",
+                                f"Đã nhập {imported_count} câu hỏi từ file.",
+                                "success",
+                            )
+                        elif import_error:
+                            self.show_system_notification(
+                                "Nhập câu hỏi",
+                                f"Không nhập được: {import_error}",
+                                "error",
+                            )
+                        else:
+                            self.show_system_notification(
+                                "Nhập câu hỏi",
+                                "Không tìm thấy câu hỏi hợp lệ trong file.",
+                                "warning",
+                            )
+                    except Exception:
+                        pass
+                try:
+                    self.show_screen("new_project")
+                except Exception:
+                    pass
+                return
         except Exception:
             # Fallback to previous behavior
             self.editor_screen.load_project(project_data)
@@ -1602,7 +2228,92 @@ class MainWindow(QMainWindow):
         # Switch to appropriate editor screen with the selected project
         self._open_editor_for_project(project_data)
 
+    def _track_recent_project(self, project_data: dict):
+        """Record a project as recently opened (single choke point).
+
+        Opening paths (browser Mở, resume, palette, Edubot, player) all
+        funnel here or call this directly, so "recent" never goes stale.
+        """
+        try:
+            if not isinstance(project_data, dict):
+                return
+            pid = str(project_data.get("id") or "").strip()
+            if not pid or not self.settings_manager:
+                return
+            self.settings_manager.add_recent_project(pid, str(project_data.get("name") or ""))
+        except Exception:
+            pass
+
+    def _maybe_notify_backup_restore(self):
+        """Hien thong bao 1 lan neu project vua duoc khoi phuc tu backup."""
+        try:
+            pm = self.project_manager
+            if pm is None:
+                return
+            info = pm.pop_last_restore_info() if hasattr(pm, "pop_last_restore_info") else None
+            names = pm.pop_restored_names() if hasattr(pm, "pop_restored_names") else []
+            bits = []
+            if isinstance(info, dict) and info.get("name"):
+                bits.append(str(info.get("name")))
+            for n in (names or []):
+                if n and n not in bits:
+                    bits.append(str(n))
+            if not bits:
+                return
+            try:
+                from eduplay.core.i18n import I18n as _I18nBk
+                lang = self.settings_manager.get_language() if self.settings_manager else "en"
+                title = _I18nBk.t("project.backup_restored_title", lang)
+                if not title or title == "project.backup_restored_title":
+                    raise ValueError("i18n-missing")
+                if len(bits) == 1 and isinstance(info, dict) and info.get("name") == bits[0]:
+                    msg = _I18nBk.t(
+                        "project.backup_restored_message", lang,
+                        name=bits[0], backup=str(info.get("backup") or ""),
+                    )
+                    if not msg or msg == "project.backup_restored_message":
+                        raise ValueError("i18n-missing")
+                else:
+                    msg = _I18nBk.t(
+                        "project.backup_restored_list", lang,
+                        count=len(bits), names=", ".join(f'"{b}"' for b in bits[:8]),
+                    )
+                    if not msg or msg == "project.backup_restored_list":
+                        raise ValueError("i18n-missing")
+            except Exception:
+                if lang == "vi":
+                    title = "Đã khôi phục từ backup"
+                    msg = (
+                        f'File dự án "{bits[0]}" bị lỗi nên đã tự khôi phục từ bản backup. '
+                        "Hãy kiểm tra lại nội dung."
+                        if len(bits) == 1 else
+                        f"Đã tự khôi phục {len(bits)} dự án bị lỗi từ backup: " + ", ".join(f'"{b}"' for b in bits[:8])
+                    )
+                else:
+                    title = "Restored from backup"
+                    msg = (
+                        f'Project file "{bits[0]}" was corrupted, so it was restored from backup. '
+                        "Please review its content."
+                        if len(bits) == 1 else
+                        f"Restored {len(bits)} corrupted projects from backup: " + ", ".join(f'"{b}"' for b in bits[:8])
+                    )
+            try:
+                self._show_message(title, msg, "warning")
+            except Exception:
+                pass
+            try:
+                self.show_system_notification(title, msg, "warning")
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def _open_editor_for_project(self, project_data: dict):
+        self._track_recent_project(project_data)
+        try:
+            self._maybe_notify_backup_restore()
+        except Exception:
+            pass
         try:
             from eduplay.core.i18n import I18n
             lang = self.settings_manager.get_language() if self.settings_manager else 'en'
@@ -1671,6 +2382,26 @@ class MainWindow(QMainWindow):
                 self.editor_quiz_screen.load_project(project_data)
                 self.show_screen('editor_quiz')
             try:
+                # Keep ProjectManager in sync with the displayed editor project
+                if isinstance(project_data, dict) and str(project_data.get("id") or "").strip():
+                    try:
+                        active_proj = None
+                        if gl == 'fishing':
+                            active_proj = getattr(self.editor_fishing_screen, 'current_project', None)
+                        else:
+                            active_proj = getattr(self.editor_quiz_screen, 'current_project', None)
+                        if isinstance(active_proj, dict) and str(active_proj.get("id") or "").strip():
+                            self.project_manager.current_project = active_proj
+                        else:
+                            self.project_manager.current_project = project_data
+                    except Exception:
+                        try:
+                            self.project_manager.current_project = project_data
+                        except Exception:
+                            pass
+            except Exception:
+                pass
+            try:
                 self._sync_home_quick_actions()
             except Exception:
                 pass
@@ -1681,8 +2412,8 @@ class MainWindow(QMainWindow):
                 pass
     
     def show_help(self):
-        """Show help dialog — menu-driven: 3 section buttons first, then detail view with back button"""
-        from PySide6.QtWidgets import QScrollArea, QStackedWidget
+        """Show help dialog — two panes: section list (left) + content (right), Tổng quan pre-selected"""
+        from PySide6.QtWidgets import QScrollArea, QListWidget, QListWidgetItem, QSplitter
         from PySide6.QtCore import QTimer
         try:
             lang = self.settings_manager.get_language()
@@ -1711,8 +2442,8 @@ class MainWindow(QMainWindow):
             screen = QApplication.primaryScreen()
             if screen:
                 sg = screen.availableGeometry()
-                dlg_w = min(820, max(640, int(sg.width() * 0.62)))
-                dlg_h = min(680, max(520, int(sg.height() * 0.75)))
+                dlg_w = min(1080, max(780, int(sg.width() * 0.72)))
+                dlg_h = min(700, max(540, int(sg.height() * 0.78)))
                 help_dialog.resize(dlg_w, dlg_h)
                 help_dialog.move(
                     sg.x() + (sg.width() - dlg_w) // 2,
@@ -1745,6 +2476,51 @@ class MainWindow(QMainWindow):
             btn_hover = "#EEF2FF"
             content_bg = "#FFFFFF"
 
+        # Bang mau de noi dung HTML doi theo theme (khi xuoi toi token).
+        # Khong giu hex cua chuoi dich trong i18n -> len doi mau se tu "do chet".
+        if theme == "dark":
+            help_palette = {
+                "fg": "#E2E8F0",
+                "fg_soft": "#CBD5E1",
+                "muted": "#94A3B8",
+                "bg_card": "#1E293B",
+                "border": "#334155",
+                "surface_ok": "rgba(34,197,94,0.12)",
+                "surface_info": "rgba(59,130,246,0.12)",
+                "surface_warn": "rgba(249,115,22,0.12)",
+                "surface_accent": "rgba(127,86,217,0.14)",
+                "ok": "#4ADE80",
+                "ok_text": "#86EFAC",
+                "info": "#60A5FA",
+                "info_text": "#93C5FD",
+                "warn": "#FB923C",
+                "accent": "#A78BFA",
+            }
+        else:
+            help_palette = {
+                "fg": "#0F172A",
+                "fg_soft": "#334155",
+                "muted": "#64748B",
+                "bg_card": "#FFFFFF",
+                "border": "#E2E8F0",
+                "surface_ok": "#F0FDF4",
+                "surface_info": "#EFF6FF",
+                "surface_warn": "#FFF7ED",
+                "surface_accent": "#FAF5FF",
+                "ok": "#22C55E",
+                "ok_text": "#065F46",
+                "info": "#3B82F6",
+                "info_text": "#1E40AF",
+                "warn": "#F97316",
+                "accent": "#7F56D9",
+            }
+
+        def _help_html(raw: str) -> str:
+            out = str(raw or "")
+            for name, value in help_palette.items():
+                out = out.replace("{{%s}}" % name, value)
+            return out
+
         help_dialog.setStyleSheet(f"""
             QDialog {{ background-color: {dlg_bg}; color: {dlg_fg}; }}
             QLabel {{ background-color: transparent; color: {dlg_fg}; }}
@@ -1769,6 +2545,11 @@ class MainWindow(QMainWindow):
                 background-color: {btn_hover};
                 border-color: {accent};
                 color: {accent};
+            }}
+            QPushButton:pressed {{
+                background-color: {accent};
+                border-color: {accent};
+                color: #FFFFFF;
             }}
             QPushButton#back-btn {{
                 background-color: transparent;
@@ -1796,6 +2577,9 @@ class MainWindow(QMainWindow):
             QPushButton#close-btn:hover {{
                 background-color: #8B66E9;
             }}
+            QPushButton#close-btn:pressed {{
+                background-color: #6D28D9;
+            }}
             QScrollArea {{ border: none; background: transparent; }}
             QScrollBar:vertical {{ background: transparent; width: 6px; border-radius: 3px; }}
             QScrollBar::handle:vertical {{ background: {card_border}; border-radius: 3px; min-height: 20px; }}
@@ -1809,44 +2593,56 @@ class MainWindow(QMainWindow):
             except Exception:
                 return fallback
 
-        sections = [
-            {
-                "icon": "🧭",
-                "title": _t("help.sections.overview.title", "Overview"),
-                "subtitle": _t("help.sections.overview.subtitle", ""),
-                "content": _t("help.sections.overview.content", ""),
-            },
-            {
-                "icon": "🖥️",
-                "title": _t("help.sections.interface.title", "Interface"),
-                "subtitle": _t("help.sections.interface.subtitle", "Home, toolbar and navigation"),
-                "content": _t("help.sections.interface.content", ""),
-            },
-            {
-                "icon": "📁",
-                "title": _t("help.sections.create_project.title", "Create Project"),
-                "subtitle": _t("help.sections.create_project.subtitle", "Create and manage game projects"),
-                "content": _t("help.sections.create_project.content", ""),
-            },
-            {
-                "icon": "🤖",
-                "title": _t("help.sections.edubot.title", "Edubot (AI)"),
-                "subtitle": _t("help.sections.edubot.subtitle", "Auto-generate questions with AI"),
-                "content": _t("help.sections.edubot.content", ""),
-            },
-            {
-                "icon": "🚀",
-                "title": _t("help.sections.preview_export.title", "Preview & Export"),
-                "subtitle": _t("help.sections.preview_export.subtitle", "Test and share your game"),
-                "content": _t("help.sections.preview_export.content", ""),
-            },
-            {
-                "icon": "📊",
-                "title": _t("help.sections.powerpoint_addin.title", "PowerPoint Add-in"),
-                "subtitle": _t("help.sections.powerpoint_addin.subtitle", "Embed games into PowerPoint slides"),
-                "content": _t("help.sections.powerpoint_addin.content", ""),
-            },
+        # Sap xep theo VIEC nguoi dung lam, khong theo "tinh dang co gi".
+        # Moi nhom la mot buoc trong viec that, dung de tim bang muc dich.
+        section_specs = [
+            ("start", "help.sections.quickstart", "⚡", "Quick start"),
+            ("write", "help.sections.editor", "📝", "Write questions"),
+            ("write", "help.sections.import", "📥", "Import from Word/Excel"),
+            ("write", "help.sections.media", "🖼", "Images & sounds"),
+            ("project", "help.sections.browse", "📂", "Projects"),
+            ("share", "help.sections.preview", "👁", "Preview & test"),
+            ("share", "help.sections.export", "📤", "Export & share"),
+            ("share", "help.sections.powerpoint_addin", "📊", "PowerPoint add-in"),
+            ("extra", "help.sections.edubot", "🤖", "Edubot (AI)"),
+            ("extra", "help.sections.settings", "⚙", "Settings"),
+            ("extra", "help.sections.keyboard_shortcuts", "⌨", "Keyboard shortcuts"),
+            ("extra", "help.sections.troubleshooting", "🛠", "Troubleshooting"),
         ]
+        group_titles = {
+            "start": ("help.group.start", "Get started"),
+            "write": ("help.group.write", "Build your questions"),
+            "project": ("help.group.project", "Organize"),
+            "share": ("help.group.share", "Test & share"),
+            "extra": ("help.group.extra", "More"),
+        }
+
+        sections = []
+        rows = []  # ("group", label) | ("item", index)
+        seen_groups = []
+        for group_key, base_key, icon, fallback_title in section_specs:
+            title = _t(f"{base_key}.title", fallback_title)
+            subtitle = _t(f"{base_key}.subtitle", "")
+            content = _t(f"{base_key}.content", "")
+            if not content.strip():
+                # key chua co noi dung (hoac sai ten) -> dung muc thay the
+                for alt in ("create_project", "overview", "preview_export", "tips"):
+                    content = _t(f"help.sections.{alt}.content", "")
+                    if content.strip():
+                        break
+            if group_key not in seen_groups:
+                seen_groups.append(group_key)
+                g_key, g_fb = group_titles[group_key]
+                rows.append(("group", _t(g_key, g_fb)))
+            rows.append(("item", len(sections)))
+            sections.append(
+                {
+                    "icon": icon,
+                    "title": title,
+                    "subtitle": subtitle,
+                    "content": content,
+                }
+            )
 
         main_layout = QVBoxLayout(help_dialog)
         main_layout.setContentsMargins(24, 20, 24, 20)
@@ -1867,96 +2663,137 @@ class MainWindow(QMainWindow):
         header_layout.addWidget(sub_lbl)
         main_layout.addWidget(header_widget)
 
-        # Stacked: page 0 = menu (3 buttons), page 1 = detail view
-        stack = QStackedWidget()
-        main_layout.addWidget(stack, 1)
+        # Two panes: left section list + right content
+        from PySide6.QtWidgets import QFrame, QTextBrowser
+        from PySide6.QtCore import Qt as _QtSplit
+        splitter = QSplitter(_QtSplit.Horizontal)
+        splitter.setChildrenCollapsible(False)
+        main_layout.addWidget(splitter, 1)
 
-        # --- Page 0: Menu ---
-        menu_page = QWidget()
-        menu_layout = QVBoxLayout(menu_page)
-        menu_layout.setContentsMargins(0, 0, 0, 0)
-        menu_layout.setSpacing(10)
-        menu_layout.addStretch(1)
-        for i, sec in enumerate(sections):
-            btn = QPushButton(f"  {sec['icon']}  {sec['title']}")
-            btn.setMinimumHeight(64)
-            btn.setStyleSheet(f"""
-                QPushButton {{
-                    background-color: {card_bg};
-                    color: {dlg_fg};
-                    border: 1px solid {card_border};
-                    border-radius: 14px;
-                    padding: 16px 20px;
-                    font-size: 15px;
-                    font-weight: 700;
-                    text-align: left;
-                }}
-                QPushButton:hover {{
-                    background-color: {btn_hover};
-                    border-color: {accent};
-                    color: {accent};
-                }}
-            """)
-            sub = QLabel(f"   {sec['subtitle']}")
-            sub.setStyleSheet(f"font-size: 12px; color: {muted}; margin-left: 4px;")
-            container = QWidget()
-            cl = QVBoxLayout(container)
-            cl.setContentsMargins(0, 0, 0, 0)
-            cl.setSpacing(0)
-            cl.addWidget(btn)
-            menu_layout.addWidget(container)
+        # --- Left: section list ---
+        nav_list = QListWidget()
+        nav_list.setMinimumWidth(230)
+        nav_list.setMaximumWidth(300)
+        nav_list.setSpacing(6)
+        # Khong can cuon ngang: ten muc ngan, chua giang theo chieu rong.
+        try:
+            nav_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        except Exception:
+            pass
+        nav_list.setStyleSheet(f"""
+            QListWidget {{
+                background-color: transparent;
+                border: none;
+                outline: none;
+                padding: 2px;
+            }}
+            QListWidget::item {{
+                background-color: {card_bg};
+                border: 1px solid {card_border};
+                border-radius: 12px;
+                padding: 12px 14px;
+                margin: 0px;
+                font-size: 14px;
+                font-weight: 700;
+                color: {dlg_fg};
+            }}
+            QListWidget::item:hover {{
+                border-color: {accent};
+                color: {accent};
+            }}
+            QListWidget::item:selected {{
+                background-color: {accent};
+                border-color: {accent};
+                color: #FFFFFF;
+            }}
+        """)
+        # Dong NHOM ve rieng bang delegate (QSS khong property selector cho item).
+        try:
+            from eduplay.ui.widgets.help_nav_delegate import HelpNavDelegate, GROUP_ROLE
 
-            def _mk_nav(idx):
-                def _go():
-                    stack.setCurrentIndex(1)
-                    _load_detail(idx)
-                return _go
-            btn.clicked.connect(_mk_nav(i))
+            nav_delegate = HelpNavDelegate(
+                color_hex=accent, rule_hex=card_border, parent=nav_list
+            )
+            nav_list.setItemDelegateForColumn(0, nav_delegate)
+        except Exception:
+            nav_delegate = None
+            GROUP_ROLE = None
+        item_rows = []
+        for kind, value in rows:
+            if kind == "group":
+                g_item = QListWidgetItem(str(value))
+                try:
+                    g_item.setFlags(Qt.ItemFlag.NoItemFlags)
+                except Exception:
+                    pass
+                if GROUP_ROLE is not None:
+                    try:
+                        g_item.setData(GROUP_ROLE, "group")
+                    except Exception:
+                        pass
+                nav_list.addItem(g_item)
+            else:
+                sec = sections[int(value)]
+                item = QListWidgetItem(sec["title"])
+                # Emoji ve san bang font Segoe UI Emoji: neu de emoji trong text,
+                # font dang dung (Times New Roman) khong co glyph -> o vuong.
+                try:
+                    _ic = build_emoji_icon(sec["icon"], dlg_fg, 20)
+                    if not _ic.isNull():
+                        item.setIcon(_ic)
+                except Exception:
+                    pass
+                try:
+                    item.setToolTip(sec.get("subtitle", ""))
+                except Exception:
+                    pass
+                nav_list.addItem(item)
+                item_rows.append(nav_list.count() - 1)
+        splitter.addWidget(nav_list)
 
-        menu_layout.addStretch(2)
-        stack.addWidget(menu_page)  # index 0
-
-        # --- Page 1: Detail view ---
+        # --- Right: content ---
         detail_page = QWidget()
         detail_layout = QVBoxLayout(detail_page)
-        detail_layout.setContentsMargins(0, 0, 0, 0)
+        detail_layout.setContentsMargins(8, 0, 0, 0)
         detail_layout.setSpacing(10)
 
-        # Back button row
-        back_row = QWidget()
-        back_row_layout = QHBoxLayout(back_row)
-        back_row_layout.setContentsMargins(0, 0, 0, 0)
-        back_btn = QPushButton("← Quay lại" if lang == "vi" else "← Back")
-        back_btn.setObjectName("back-btn")
-        back_btn.setMaximumWidth(120)
-        back_btn.clicked.connect(lambda: stack.setCurrentIndex(0))
-        back_row_layout.addWidget(back_btn)
-        back_row_layout.addStretch()
-        detail_layout.addWidget(back_row)
-
         # Section title in detail view
-        detail_title = QLabel("")
-        detail_title.setStyleSheet(f"font-size: 17px; font-weight: 700; color: {dlg_fg}; margin-bottom: 4px;")
+        detail_title = QWidget()
+        detail_title_row = QHBoxLayout(detail_title)
+        detail_title_row.setContentsMargins(0, 0, 0, 4)
+        detail_title_row.setSpacing(8)
+        detail_title_icon = QLabel("")
+        detail_title_icon.setFixedSize(20, 20)
+        detail_title_icon.setStyleSheet("background: transparent; border: none;")
+        detail_title_text = QLabel("")
+        detail_title_text.setStyleSheet(f"font-size: 17px; font-weight: 700; color: {dlg_fg};")
+        detail_title_row.addWidget(detail_title_icon, 0, Qt.AlignmentFlag.AlignVCenter)
+        detail_title_row.addWidget(detail_title_text, 0, Qt.AlignmentFlag.AlignVCenter)
+        detail_title_row.addStretch(1)
         detail_layout.addWidget(detail_title)
 
         # Content area (scrollable)
         detail_scroll = QScrollArea()
         detail_scroll.setWidgetResizable(True)
-        from PySide6.QtWidgets import QFrame
         try:
-            detail_scroll.setFrameShape(QFrame.Shape.NoFrame)
+            detail_scroll.setFrameShape(QFrame.NoFrame)
         except Exception:
-            try:
-                detail_scroll.setFrameShape(QFrame.NoFrame)
-            except Exception:
-                pass
+            pass
         detail_inner = QWidget()
         detail_inner.setStyleSheet(f"background: transparent;")
         detail_inner_layout = QVBoxLayout(detail_inner)
         detail_inner_layout.setContentsMargins(0, 0, 0, 0)
-        from PySide6.QtWidgets import QTextBrowser
         detail_text = QTextBrowser()
         detail_text.setOpenExternalLinks(True)
+        # Noi dung co nhieu emoji. Font dang dung (vd Times New Roman) khong co
+        # glyph emoji -> Qt in o vuong. Liet ke them font emoji vao cuoi chuoi
+        # de Qt tu fallback sang font co glyph cho ky tu do.
+        try:
+            from PySide6.QtWidgets import QApplication as _QApp
+            _ui_family = _QApp.font().family() or "Segoe UI"
+        except Exception:
+            _ui_family = "Segoe UI"
+        _family_stack = f"'{_ui_family}', 'Segoe UI Emoji', 'Segoe UI Symbol', 'Segoe UI', sans-serif"
         detail_text.setStyleSheet(f"""
             QTextBrowser {{
                 background-color: {card_bg};
@@ -1964,6 +2801,7 @@ class MainWindow(QMainWindow):
                 border: 1px solid {card_border};
                 border-radius: 14px;
                 padding: 20px;
+                font-family: {_family_stack};
                 font-size: 14px;
                 line-height: 1.6;
             }}
@@ -1974,19 +2812,68 @@ class MainWindow(QMainWindow):
         detail_inner_layout.addWidget(detail_text)
         detail_scroll.setWidget(detail_inner)
         detail_layout.addWidget(detail_scroll, 1)
-        stack.addWidget(detail_page)  # index 1
+        splitter.addWidget(detail_page)
+        try:
+            splitter.setStretchFactor(0, 0)
+            splitter.setStretchFactor(1, 1)
+            splitter.setSizes([260, 700])
+        except Exception:
+            pass
 
-        def _load_detail(idx: int):
-            sec = sections[idx]
-            detail_title.setText(f"{sec['icon']}  {sec['title']}")
-            detail_text.setHtml(sec["content"])
+        row_to_section = {}
+
+        def _load_row(row: int):
+            if row is None or row < 0 or row >= nav_list.count():
+                return
+            it = nav_list.item(row)
+            if it is None:
+                return
+            try:
+                if GROUP_ROLE is not None and str(it.data(GROUP_ROLE) or "") == "group":
+                    return
+            except Exception:
+                pass
+            try:
+                sec = sections[row_to_section[row]]
+            except Exception:
+                return
+            detail_title_text.setText(str(sec["title"]))
+            try:
+                _ic = build_emoji_icon(sec["icon"], accent, 20)
+                if not _ic.isNull():
+                    detail_title_icon.setPixmap(_ic.pixmap(20, 20))
+                else:
+                    detail_title_icon.clear()
+            except Exception:
+                pass
+            detail_text.setHtml(_help_html(sec["content"]))
             try:
                 detail_scroll.verticalScrollBar().setValue(0)
             except Exception:
                 pass
 
-        # Start on menu page
-        stack.setCurrentIndex(0)
+        for _n, _row in enumerate(item_rows):
+            row_to_section[_row] = _n
+
+        try:
+            nav_list.currentRowChanged.connect(_load_row)
+        except Exception:
+            pass
+
+        # Moc: muc dau tien
+        if item_rows:
+            try:
+                nav_list.setCurrentRow(item_rows[0])
+            except Exception:
+                pass
+
+        # Moc: muc dau tien
+        if item_rows:
+            try:
+                nav_list.setCurrentRow(item_rows[0])
+            except Exception:
+                pass
+            _load_row(item_rows[0])
 
         # Bottom action row
         action_row = QWidget()
@@ -1997,8 +2884,14 @@ class MainWindow(QMainWindow):
         try:
             download_text = I18n.t('help.download_docx_btn', lang)
         except Exception:
-            download_text = "⬇️ Mẫu DOCX" if lang == "vi" else "⬇️ DOCX Template"
+            download_text = "Mẫu DOCX" if lang == "vi" else "DOCX Template"
         download_btn = QPushButton(download_text)
+        try:
+            _dl_icon = build_emoji_icon("⬇", dlg_fg, 14, font_family="Segoe UI Symbol")
+            if not _dl_icon.isNull():
+                download_btn.setIcon(_dl_icon)
+        except Exception:
+            pass
         download_btn.setStyleSheet(f"""
             QPushButton {{
                 background-color: {btn_bg};
@@ -2011,10 +2904,10 @@ class MainWindow(QMainWindow):
             }}
             QPushButton:hover {{ background-color: {btn_hover}; border-color: {accent}; }}
         """)
-        def _download_docx():
+        def _download_template(force_fmt=None):
             try:
-                from PySide6.QtWidgets import QFileDialog
                 from eduplay.core.import_service import ImportService
+                from eduplay.ui.file_dialogs import get_save_file_name
                 try:
                     from eduplay.ui.widgets.template_selection_dialog import TemplateSelectionDialog
                     dialog = TemplateSelectionDialog(self, lang)
@@ -2024,32 +2917,72 @@ class MainWindow(QMainWindow):
                         return
                 except Exception:
                     template_type = "general"
-                dlg2 = QFileDialog(self)
-                dlg2.setAcceptMode(QFileDialog.AcceptSave)
-                dlg2.setFileMode(QFileDialog.AnyFile)
+                if force_fmt == "xlsx":
+                    filt = "Excel (*.xlsx)"
+                    default_ext = ".xlsx"
+                elif force_fmt == "docx":
+                    filt = "Word Document (*.docx)"
+                    default_ext = ".docx"
+                else:
+                    filt = "Word Document (*.docx);;Excel (*.xlsx);;Text (*.txt)"
+                    default_ext = ".docx"
                 try:
-                    dlg2.setNameFilter("Word Document (*.docx);;Excel (*.xlsx);;Text (*.txt)")
+                    save_title = I18n.t('template.save_title', lang)
                 except Exception:
-                    pass
-                if dlg2.exec():
-                    sp = dlg2.selectedFiles()[0] if dlg2.selectedFiles() else ""
-                    if sp:
-                        import os as _os
+                    save_title = "Chọn nơi lưu file mẫu" if lang == "vi" else "Choose where to save the template"
+                sp = get_save_file_name(self, save_title, "", filt)
+                if sp:
+                    import os as _os
+                    if force_fmt:
+                        if not sp.lower().endswith("." + force_fmt):
+                            sp += default_ext
+                        fmt = force_fmt
+                    else:
                         if not _os.path.splitext(sp)[1]:
                             sp += ".docx"
                         fmt = "xlsx" if sp.lower().endswith(".xlsx") else ("txt" if sp.lower().endswith(".txt") else "docx")
-                        ImportService().create_sample_template(sp, fmt, lang, template_type)
-                        try:
-                            self._show_message(I18n.t('help.title', lang), I18n.t('help.download_done', lang), "success")
-                        except Exception:
-                            pass
+                    ImportService().create_sample_template(sp, fmt, lang, template_type)
+                    try:
+                        self._show_message(I18n.t('help.title', lang), I18n.t('help.download_done', lang), "success")
+                    except Exception:
+                        pass
             except Exception as e:
                 try:
                     self._show_message("Error", str(e), "error")
                 except Exception:
                     pass
+        def _download_docx():
+            _download_template("docx")
+        def _download_xlsx():
+            _download_template("xlsx")
         download_btn.clicked.connect(_download_docx)
         action_layout.addWidget(download_btn)
+        # Excel template download
+        try:
+            download_xlsx_text = I18n.t('help.download_xlsx_btn', lang)
+        except Exception:
+            download_xlsx_text = "Mẫu Excel" if lang == "vi" else "Excel Template"
+        download_xlsx_btn = QPushButton(download_xlsx_text)
+        try:
+            _xl_icon = build_emoji_icon("⬇", dlg_fg, 14, font_family="Segoe UI Symbol")
+            if not _xl_icon.isNull():
+                download_xlsx_btn.setIcon(_xl_icon)
+        except Exception:
+            pass
+        download_xlsx_btn.setStyleSheet(f"""
+            QPushButton {{
+                background-color: {btn_bg};
+                color: {dlg_fg};
+                border: 1px solid {btn_border};
+                border-radius: 10px;
+                padding: 9px 18px;
+                font-weight: 600;
+                font-size: 13px;
+            }}
+            QPushButton:hover {{ background-color: {btn_hover}; border-color: {accent}; }}
+        """)
+        download_xlsx_btn.clicked.connect(_download_xlsx)
+        action_layout.addWidget(download_xlsx_btn)
         action_layout.addStretch()
         close_btn = QPushButton(_t("help.close", "Close"))
         close_btn.setObjectName("close-btn")
@@ -2439,6 +3372,24 @@ QLabel {
                 msg = msg + "\n\nError: " + err
             msg = msg + "\n\nFix:\n- Install dependencies: pip install -r requirements.txt\n- First run needs internet to download the GGUF model and llama.cpp (CLI)"
         try:
+            from eduplay.core.i18n import I18n as _AiI18n
+            _t = _AiI18n.t("ai.local_not_ready_title", lang)
+            if _t and _t != "ai.local_not_ready_title":
+                title = _t
+            _m = _AiI18n.t("ai.local_not_ready_msg", lang)
+            if _m and _m != "ai.local_not_ready_msg":
+                msg = _m
+                if err:
+                    _el = _AiI18n.t("ai.local_error_label", lang)
+                    if not _el or _el == "ai.local_error_label":
+                        _el = "Lỗi: " if lang == "vi" else "Error: "
+                    msg = msg + "\n\n" + _el + err
+                _fx = _AiI18n.t("ai.local_not_ready_fix", lang)
+                if _fx and _fx != "ai.local_not_ready_fix":
+                    msg = msg + "\n\n" + _fx
+        except Exception:
+            pass
+        try:
             self._show_message(title, msg, "warning")
         except Exception:
             try:
@@ -2755,6 +3706,10 @@ QLabel {
                     except Exception:
                         pass
                     try:
+                        _run_log(f"on_finished crashed: {cb_error!r}\n{(cb_tb or '')[-3000:]}")
+                    except Exception:
+                        pass
+                    try:
                         cw = getattr(self, "chat_widget", None)
                         if cw is not None and bool(getattr(cw, "_busy", False)):
                             try:
@@ -3062,7 +4017,7 @@ QLabel {
                             eff = QGraphicsOpacityEffect(lbl)
                             lbl.setGraphicsEffect(eff)
                         anim = QPropertyAnimation(eff, b"opacity", self)
-                        anim.setDuration(180)
+                        anim.setDuration(_motion_ms(180))
                         anim.setStartValue(1.0)
                         anim.setEndValue(0.0)
                         anim.setEasingCurve(QEasingCurve.OutCubic)
@@ -3187,7 +4142,7 @@ QLabel {
                 eff = QGraphicsOpacityEffect(logo_label)
                 logo_label.setGraphicsEffect(eff)
                 fade = QPropertyAnimation(eff, b"opacity", self)
-                fade.setDuration(900)
+                fade.setDuration(_motion_ms(900))
                 fade.setStartValue(0.0)
                 fade.setEndValue(1.0)
                 fade.start(QPropertyAnimation.DeleteWhenStopped)
@@ -3242,7 +4197,7 @@ QLabel {
                     wipe_in.setCutX(max(1, rect.width()) + 2)
                     title.setGraphicsEffect(wipe_in)
                     reveal = QVariantAnimation(self)
-                    reveal.setDuration(700)
+                    reveal.setDuration(_motion_ms(700))
                     reveal.setStartValue(max(1, rect.width()) + 2)
                     reveal.setEndValue(0)
                     reveal.setEasingCurve(QEasingCurve.InOutCubic)
@@ -3396,7 +4351,7 @@ QLabel {
             clip_w = max(1, min(max(1, title.width()), text_w))
             wipe.setCutX(clip_w + 2)
             anim = QVariantAnimation(self)
-            anim.setDuration(460)
+            anim.setDuration(_motion_ms(460))
             anim.setStartValue(clip_w + 2)
             anim.setEndValue(0)
             anim.setEasingCurve(QEasingCurve.InOutCubic)
@@ -3586,12 +4541,91 @@ QLabel {
                     if c3 is not None and c3.isVisible():
                         marks.append((c3, step_play_card))
 
+                # Sidebar guide (shown once, here at home): hover the left edge.
+                try:
+                    _hz = getattr(self, "_left_nav_hotzone", None)
+                    _hz_visible = False
+                    try:
+                        _hz_visible = bool(_hz is not None and _hz.isVisible())
+                    except Exception:
+                        _hz_visible = False
+                    if _hz_visible:
+                        try:
+                            step_sidebar = I18n.t("onboarding.step_sidebar", lang)
+                        except Exception:
+                            step_sidebar = "Mở thanh bên: di chuột sát mép trái" if lang == "vi" else "Open sidebar: hover near left edge"
+                        if step_sidebar and str(step_sidebar).strip():
+                            marks.insert(0, (_hz, step_sidebar))
+                except Exception:
+                    pass
+
+                # Edubot chat entry: prefer the global floating toggle (visible
+                # on every screen); fall back to the home chat button.
+                # Still a single chat step, never both.
+                try:
+                    _chat = getattr(self, "_chat_toggle_btn", None)
+                    _chat_visible = False
+                    try:
+                        _chat_visible = bool(_chat is not None and _chat.isVisible())
+                    except Exception:
+                        _chat_visible = False
+                    if not _chat_visible:
+                        try:
+                            _chat = getattr(home, "chat_button", None) if home is not None else None
+                            _chat_visible = bool(_chat is not None and _chat.isVisible())
+                        except Exception:
+                            _chat_visible = False
+                    if _chat_visible:
+                        try:
+                            step_chat = I18n.t("onboarding.step_chat", lang)
+                        except Exception:
+                            step_chat = "Edubot: bấm để chat với AI" if lang == "vi" else "Edubot: click to chat with AI"
+                        if step_chat and str(step_chat).strip():
+                            marks.append((_chat, step_chat))
+                except Exception:
+                    pass
+
+                # Header buttons (? Help, gear Settings): window chrome,
+                # guided once here at home like the sidebar.
+                try:
+                    _help = getattr(self, "_help_btn", None)
+                    try:
+                        _help_visible = bool(_help is not None and _help.isVisible())
+                    except Exception:
+                        _help_visible = False
+                    if _help_visible:
+                        try:
+                            step_help = I18n.t("onboarding.step_help", lang)
+                        except Exception:
+                            step_help = "Trợ giúp: xem hướng dẫn sử dụng" if lang == "vi" else "Help: view usage guide"
+                        if step_help and str(step_help).strip():
+                            marks.append((_help, step_help))
+                except Exception:
+                    pass
+                try:
+                    _st = getattr(self, "_settings_btn", None)
+                    try:
+                        _st_visible = bool(_st is not None and _st.isVisible())
+                    except Exception:
+                        _st_visible = False
+                    if _st_visible:
+                        try:
+                            step_settings = I18n.t("onboarding.step_settings", lang)
+                        except Exception:
+                            step_settings = "Cài đặt: đổi ngôn ngữ, chủ đề, AI" if lang == "vi" else "Settings: change language, theme, AI"
+                        if step_settings and str(step_settings).strip():
+                            marks.append((_st, step_settings))
+                except Exception:
+                    pass
+
                 if not marks:
                     _show_fallback_welcome()
                     return
 
                 from eduplay.ui.widgets.coach_marks_overlay import CoachMarksOverlay
-                overlay = CoachMarksOverlay(self, marks, lang=lang)
+                # One mark per page: "Tiếp tục" steps through each guide and
+                # "Xong" only appears on the last one.
+                overlay = CoachMarksOverlay(self, marks, lang=lang, group_size=1)
 
                 def _done(_dont_show: bool):
                     try:
@@ -3697,6 +4731,128 @@ QLabel {
         except Exception:
             _build_overlay()
 
+    def _screen_guide_marks(self, screen_name, lang="en"):
+        """Build (widget, text) marks for a per-screen first-visit guide."""
+        marks = []
+        try:
+            spec = _SCREEN_GUIDE_SPECS.get(str(screen_name or ""))
+            if not spec:
+                return marks
+            screen_attr, items = spec
+            screen_obj = getattr(self, screen_attr, None)
+            if screen_obj is None:
+                return marks
+            try:
+                from eduplay.core.i18n import I18n
+            except Exception:
+                I18n = None  # type: ignore
+            for widget_attr, key in (items or []):
+                try:
+                    w = screen_obj
+                    for _part in str(widget_attr or "").split("."):
+                        _part = _part.strip()
+                        if not _part:
+                            w = None
+                            break
+                        try:
+                            w = getattr(w, _part, None)
+                        except Exception:
+                            w = None
+                            break
+                        if w is None:
+                            break
+                    if w is None:
+                        continue
+                    try:
+                        visible = bool(w.isVisible())
+                    except Exception:
+                        visible = False
+                    if not visible:
+                        continue
+                    try:
+                        text = I18n.t(key, lang) if I18n else ""
+                    except Exception:
+                        text = ""
+                    if not text or not str(text).strip():
+                        continue
+                    marks.append((w, text))
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return marks
+
+    def _maybe_show_screen_guide(self, screen_name):
+        """Show the first-visit guide overlay for a screen, once ever."""
+        try:
+            name = str(screen_name or "")
+            if name == "home" or name not in _SCREEN_GUIDE_SPECS:
+                return
+            sm = getattr(self, "settings_manager", None)
+            if sm is None:
+                return
+            try:
+                if bool(sm.get("onboarding.dismissed", False)):
+                    return
+                if bool(sm.get("guides.%s.seen" % name, False)):
+                    return
+            except Exception:
+                return
+            # Never fight the startup intro or the home onboarding.
+            try:
+                if not bool(getattr(self, "_startup_home_fade_done", False)):
+                    return
+            except Exception:
+                pass
+            try:
+                if getattr(self, "_startup_overlay", None) is not None:
+                    return
+            except Exception:
+                pass
+            try:
+                if bool(getattr(self, "_pending_first_run_onboarding", False)):
+                    return
+            except Exception:
+                pass
+            try:
+                lang = sm.get_language() or "en"
+            except Exception:
+                lang = "en"
+            marks = self._screen_guide_marks(name, lang)
+            if not marks:
+                # Widgets not ready yet - try again on the next visit,
+                # without marking this screen as seen.
+                return
+            from eduplay.ui.widgets.coach_marks_overlay import CoachMarksOverlay
+            # One mark per page: "Tiếp tục" steps through each guide and
+            # "Xong" only appears on the last one.
+            overlay = CoachMarksOverlay(self, marks, lang=lang, group_size=1)
+
+            def _done(_dont_show):
+                try:
+                    if sm is not None:
+                        sm.set("guides.%s.seen" % name, True)
+                except Exception:
+                    pass
+                try:
+                    if _dont_show and sm is not None:
+                        sm.set("onboarding.dismissed", True)
+                except Exception:
+                    pass
+
+            try:
+                overlay.finished.connect(_done)
+            except Exception:
+                pass
+            try:
+                overlay.show()
+                overlay.raise_()
+                overlay.activateWindow()
+            except Exception:
+                pass
+        except Exception:
+            pass
+
     def _start_startup_exit_sequence(self):
         try:
             overlay = getattr(self, "_startup_overlay", None)
@@ -3787,7 +4943,7 @@ QLabel {
             wipe = _StartupLeftToRightWipeEffect(title)
             title.setGraphicsEffect(wipe)
             wipe_anim = QVariantAnimation(self)
-            wipe_anim.setDuration(700)
+            wipe_anim.setDuration(_motion_ms(700))
             wipe_anim.setStartValue(0)
             wipe_anim.setEndValue(max(1, rect.width()) + 2)
             wipe_anim.setEasingCurve(QEasingCurve.InOutCubic)
@@ -3877,7 +5033,7 @@ QLabel {
                 self._start_startup_exit_sequence()
                 return
             anim = QPropertyAnimation(logo, b"geometry", self)
-            anim.setDuration(1400)
+            anim.setDuration(_motion_ms(1400))
             anim.setStartValue(start_rect)
             anim.setEndValue(end_rect)
             anim.setEasingCurve(QEasingCurve.InOutCubic)
@@ -3971,12 +5127,12 @@ QLabel {
             title_target = QRect(title_target_x, title_target_y, title_w, title_h)
             move_group = QParallelAnimationGroup(self)
             logo_anim = QPropertyAnimation(logo, b"geometry", self)
-            logo_anim.setDuration(800)
+            logo_anim.setDuration(_motion_ms(800))
             logo_anim.setStartValue(logo_rect)
             logo_anim.setEndValue(logo_target)
             logo_anim.setEasingCurve(QEasingCurve.InOutCubic)
             title_anim = QPropertyAnimation(title, b"geometry", self)
-            title_anim.setDuration(800)
+            title_anim.setDuration(_motion_ms(800))
             title_anim.setStartValue(title_rect)
             title_anim.setEndValue(title_target)
             title_anim.setEasingCurve(QEasingCurve.InOutCubic)
@@ -4030,7 +5186,7 @@ QLabel {
             else:
                 dev_name_text = "Nguyễn Thanh Tân"
                 dev_role_text = "Developer"
-                dev_email_text = "- Email: ttmeomeo807@gmail.com – tannguyenthanh498@gmail.com"
+                dev_email_text = "- Email: ttmeomeo807@hotmail.com – tannguyenthanh498@gmail.com"
             name1 = QLabel(dev_name_text, credits)
             name1.setStyleSheet(f"color: {name_color}; font-size: 22px; font-weight: 800;")
             role1 = QLabel(dev_role_text, credits)
@@ -4075,7 +5231,7 @@ QLabel {
             else:
                 editor_name_text = "Bùi Ngô Anh Thư"
                 editor_role_text = "Editor"
-                editor_email_text = "- Email: btmaomao262@gmail.com"
+                editor_email_text = "- Email: btmaomao262@hotmail.com"
             name2 = QLabel(editor_name_text, credits)
             name2.setStyleSheet(f"color: {name_color}; font-size: 22px; font-weight: 800;")
             role2 = QLabel(editor_role_text, credits)
@@ -4235,12 +5391,12 @@ QLabel {
             title_target = QRect(0, center_y + logo.height() + 24, w, title_height)
             move_group = QParallelAnimationGroup(self)
             logo_anim = QPropertyAnimation(logo, b"geometry", self)
-            logo_anim.setDuration(800)
+            logo_anim.setDuration(_motion_ms(800))
             logo_anim.setStartValue(logo.geometry())
             logo_anim.setEndValue(logo_target)
             logo_anim.setEasingCurve(QEasingCurve.InOutCubic)
             title_anim = QPropertyAnimation(title, b"geometry", self)
-            title_anim.setDuration(800)
+            title_anim.setDuration(_motion_ms(800))
             title_anim.setStartValue(title.geometry())
             title_anim.setEndValue(title_target)
             title_anim.setEasingCurve(QEasingCurve.InOutCubic)
@@ -4561,7 +5717,7 @@ QLabel {
                 return
 
             try:
-                is_capability = (not attachments) and (ml in ("bạn làm được gì", "ban lam duoc gi", "edubot làm được gì", "edubot lam duoc gi", "help", "giúp gì", "giup gi"))
+                is_capability = (not attachments) and (ml in ("bạn làm được gì", "ban lam duoc gi", "edubot làm được gì", "edubot lam duoc gi", "help", "giúp gì", "giup gi", "bạn có thể làm gì", "ban co the lam gi", "chức năng", "chuc nang", "tính năng", "tinh nang"))
             except Exception:
                 is_capability = False
             if is_capability:
@@ -4569,26 +5725,660 @@ QLabel {
                     from eduplay.core.i18n import I18n
                     if language == "vi":
                         text = (
-                            "Tôi có thể giúp bạn:\n"
-                            "• Tạo câu hỏi từ nội dung bài giảng/tài liệu\n"
-                            "• Tạo trắc nghiệm, đúng/sai, điền khuyết, trả lời ngắn\n"
-                            "• Thêm câu hỏi vào đúng dự án bạn chỉ định\n"
-                            "• Gợi ý đáp án và giải thích ngắn gọn\n\n"
-                            "Bạn thử gửi: “Tạo 5 câu trắc nghiệm về … và thêm vào dự án Thử Thách”"
+                            "Mình là Edubot - làm được 50+ việc trong EduPlay Studio:\n\n"
+                            "1. 📝 Câu hỏi (10): tạo/sửa/xóa/nhân bản/liệt kê/đếm/dịch/tóm tắt/nhập khẩu/xóa trùng lặp.\n"
+                            "2. 📁 Dự án (10): tạo/mở/lưu/sao lưu/liệt kê/tìm kiếm/sao chép/đổi tên/xóa/thống kê.\n"
+                            "3. ⚙️ Cấu hình game (8): trộn câu, thời gian mỗi câu, điểm, hiện giải thích, chế độ thi, nhạc nền, trộn ngay, sắp xếp lại.\n"
+                            "4. 👁️ Xem & đi lại (7): xem trước, chơi thử, về Trang chủ, mở Duyệt dự án, mở Soạn, mở Cài đặt, mở Trợ giúp/Ctrl+K.\n"
+                            "5. 📤 Xuất & chia sẻ (5): file HTML, link web, PowerPoint (Insert → HTML Frame), sao lưu .eduplay, chụp màn hình.\n"
+                            "6. 🖼️ Hình ảnh (4): tìm ảnh, gắn ảnh, gắn từ link, tạo câu hỏi từ ảnh.\n"
+                            "7. 🔍 Kiến thức & web (6): tìm nội dung theo chương trình, đọc link, tính toán (nhắn 'tính 12x8:4', dùng x thay *, : thay / , hoặc Ctrl+T), giải thích khái niệm, tách tài liệu, tạo full dự án tự động.\n"
+                            "8. 💬 Hỏi đáp chung: hướng dẫn xài app từng bước, giải toán/văn/anh, trả lời kiến thức.\n\n"
+                            "Thử ngay:\n"
+                            "- 'Hướng dẫn mình xài ứng dụng đi'\n"
+                            "- 'Tạo 5 câu trắc nghiệm về phân số lớp 4'\n"
+                            "- 'Mở dự án Toán lớp 4'\n"
+                            "- 'Đổi thời gian mỗi câu thành 45 giây'\n"
+                            "- 'Liệt kê dự án / đếm câu hỏi / lưu dự án'"
                         )
                     else:
                         text = (
-                            "I can help you:\n"
-                            "• Create questions from your documents/lesson content\n"
-                            "• Generate multiple-choice, true/false, fill-in, short answers\n"
-                            "• Add questions into the project you specify\n"
-                            "• Provide brief explanations\n\n"
-                            "Try: “Create 5 quiz questions about … and add to project Thử Thách”"
+                            "I'm Edubot - 50+ jobs in EduPlay Studio:\n"
+                            "• Questions (10): create/edit/delete/duplicate/list/count/translate/summarize/import/dedup\n"
+                            "• Projects (10): create/open/save/backup/list/search/duplicate/rename/delete/stats\n"
+                            "• Game config (8): shuffle, time, points, explanation, exam mode, music, reorder\n"
+                            "• View & navigate (7): preview, home, browser, editor, settings, help, palette\n"
+                            "• Export (5): HTML, web link, PowerPoint, backup, screenshot\n"
+                            "• Images (4): search, attach, URL, generate from image\n"
+                            "• Knowledge & web (6): web search/fetch, calculate, split doc, auto-create full project\n\n"
+                            "Try: 'Guide me how to use the app' / 'Create 5 quiz questions about fractions'"
                         )
                     self.chat_widget.set_ai_response(text)
                 except Exception:
                     self.chat_widget.set_ai_response("Tôi có thể tạo câu hỏi từ tài liệu và thêm vào dự án bạn chỉ định." if language == "vi" else "I can create questions from documents and add them to your project.")
+                try:
+                    self.chat_widget.set_busy(False)
+                except Exception:
+                    pass
                 return
+
+            # === DIRECT CALC HANDLER (offline, đúng 100%, không cần AI) ===
+            try:
+                _calc_expr = ""
+                try:
+                    from eduplay.core.ai_tool_payloads import extract_calc_expression as _ext_calc
+                    _calc_expr = str(_ext_calc(msg) or "").strip() if _ext_calc else ""
+                except Exception:
+                    _calc_expr = ""
+                if _calc_expr:
+                    _ok_c, _clean_c, _res_c = (False, "", ""), "", ""
+                    try:
+                        from eduplay.core.ai_tool_payloads import safe_calculate as _safe_calc
+                        _ok_c, _clean_c, _res_c = _safe_calc(_calc_expr)
+                    except Exception as _e_c:
+                        _ok_c, _clean_c, _res_c = (False, _calc_expr, str(_e_c))
+                    try:
+                        self.chat_widget.set_busy(False)
+                    except Exception:
+                        pass
+                    if _ok_c:
+                        if language == "vi":
+                            self.chat_widget.set_ai_response(f"tính {_calc_expr} → kết quả: {_res_c}")
+                        else:
+                            self.chat_widget.set_ai_response(f"{_calc_expr} = {_res_c}")
+                    else:
+                        if language == "vi":
+                            self.chat_widget.set_ai_response(f"Mình chưa tính được '{_calc_expr}': {_res_c}. Ví dụ đúng: 'tính 12x8:4' (dùng x thay *, : thay /) hoặc bấm Ctrl+T.")
+                        else:
+                            self.chat_widget.set_ai_response(f"Couldn't calculate '{_calc_expr}': {_res_c}. Try: 'calculate 12*8+5' or press Ctrl+T.")
+                    return
+            except Exception:
+                pass
+
+            # === SYNC PROJECT MANAGER WITH ACTIVE EDITOR (fix stale manager before direct handler) ===
+            try:
+                _mgr_proj_tmp = None
+                try:
+                    _mgr_proj_tmp = self.project_manager.get_current_project() if self.project_manager else None
+                except Exception:
+                    _mgr_proj_tmp = None
+                # Aggressive sync: if manager id/length differs from editor, overwrite
+                for _nm_sync in ("editor_quiz_screen", "editor_fishing_screen", "editor_screen"):
+                    try:
+                        _scr_sync = getattr(self, _nm_sync, None)
+                    except Exception:
+                        _scr_sync = None
+                    if not _scr_sync:
+                        continue
+                    try:
+                        _p_sync = _scr_sync.get_current_project() if hasattr(_scr_sync, "get_current_project") else getattr(_scr_sync, "current_project", None)
+                    except Exception:
+                        _p_sync = None
+                    if not isinstance(_p_sync, dict) or not str(_p_sync.get("id") or "").strip():
+                        continue
+                    try:
+                        mgr_id = str((_mgr_proj_tmp or {}).get("id") or "").strip() if isinstance(_mgr_proj_tmp, dict) else ""
+                    except Exception:
+                        mgr_id = ""
+                    try:
+                        sync_id = str(_p_sync.get("id") or "").strip()
+                    except Exception:
+                        sync_id = ""
+                    try:
+                        mgr_len = len((_mgr_proj_tmp or {}).get("questions") or []) if isinstance(_mgr_proj_tmp, dict) and isinstance((_mgr_proj_tmp or {}).get("questions"), list) else -1
+                    except Exception:
+                        mgr_len = -1
+                    try:
+                        sync_len = len(_p_sync.get("questions") or []) if isinstance(_p_sync.get("questions"), list) else -1
+                    except Exception:
+                        sync_len = -1
+                    need_sync = False
+                    if not isinstance(_mgr_proj_tmp, dict) or not mgr_id:
+                        need_sync = True
+                    elif mgr_id != sync_id:
+                        need_sync = True
+                    elif mgr_len != sync_len:
+                        need_sync = True
+                    elif sync_len > 0:
+                        # also check if manager missing the last question id (detects 5 vs 6 case)
+                        try:
+                            mgr_ids = {str(q.get("id") or "").strip() for q in ((_mgr_proj_tmp or {}).get("questions") or []) if isinstance(q, dict)}
+                            sync_ids = {str(q.get("id") or "").strip() for q in (_p_sync.get("questions") or []) if isinstance(q, dict)}
+                            if mgr_ids != sync_ids:
+                                need_sync = True
+                        except Exception:
+                            pass
+                    if need_sync:
+                        try:
+                            self.project_manager.current_project = _p_sync
+                            _mgr_proj_tmp = _p_sync
+                            print(f"[AI-SYNC] synced manager from {_nm_sync}: {sync_id} len {sync_len} (was {mgr_id} len {mgr_len})")
+                        except Exception:
+                            pass
+                        break
+                    # if already in sync, no need to check other screens
+                    if mgr_id == sync_id and mgr_len == sync_len and sync_len > 0:
+                        break
+            except Exception as _e_sync:
+                try:
+                    print(f"[AI-SYNC] sync failed {_e_sync}")
+                except Exception:
+                    pass
+
+            # === DIRECT DELETE HANDLER (bypass AI) ===
+            try:
+                _low_direct0 = str(msg or "").lower()
+                _is_delete_direct0 = any(kw in _low_direct0 for kw in ["xo\u00e1", "x\u00f3a", "delete", "remove", "xoa"]) and any(kw in _low_direct0 for kw in ["c\u00e2u", "cau", "question"])
+                if _is_delete_direct0:
+                    try:
+                        _proj_direct = self.project_manager.get_current_project() or {}
+                    except Exception:
+                        _proj_direct = {}
+                    # Fallback to editor screens if manager project empty / stale / id mismatch
+                    try:
+                        need_fb = False
+                        try:
+                            _qs_tmp = _proj_direct.get("questions", []) if isinstance(_proj_direct, dict) else []
+                        except Exception:
+                            _qs_tmp = []
+                        if (not isinstance(_qs_tmp, list) or len(_qs_tmp) == 0):
+                            need_fb = True
+                        else:
+                            # Check id/len mismatch with editor screens
+                            for _nm_chk in ("editor_quiz_screen", "editor_fishing_screen", "editor_screen"):
+                                try:
+                                    _scr_chk = getattr(self, _nm_chk, None)
+                                except Exception:
+                                    _scr_chk = None
+                                if not _scr_chk:
+                                    continue
+                                try:
+                                    _p_chk = _scr_chk.get_current_project() if hasattr(_scr_chk, "get_current_project") else getattr(_scr_chk, "current_project", None)
+                                except Exception:
+                                    _p_chk = None
+                                if isinstance(_p_chk, dict) and str(_p_chk.get("id") or "").strip():
+                                    try:
+                                        chk_id = str(_p_chk.get("id") or "").strip()
+                                        dir_id = str(_proj_direct.get("id") or "").strip() if isinstance(_proj_direct, dict) else ""
+                                        chk_len = len(_p_chk.get("questions") or []) if isinstance(_p_chk.get("questions"), list) else -1
+                                        dir_len = len(_qs_tmp) if isinstance(_qs_tmp, list) else -1
+                                        if chk_id and chk_id != dir_id:
+                                            need_fb = True
+                                            break
+                                        if chk_len != dir_len:
+                                            need_fb = True
+                                            break
+                                        # also check id set diff
+                                        if chk_len > 0:
+                                            dir_ids = {str(q.get("id") or "").strip() for q in _qs_tmp if isinstance(q, dict)}
+                                            chk_ids = {str(q.get("id") or "").strip() for q in (_p_chk.get("questions") or []) if isinstance(q, dict)}
+                                            if dir_ids != chk_ids:
+                                                need_fb = True
+                                                break
+                                    except Exception:
+                                        pass
+                            # need_fb already
+                        if need_fb:
+                            for _nm_fb in ("editor_quiz_screen", "editor_fishing_screen", "editor_screen"):
+                                try:
+                                    _scr_fb = getattr(self, _nm_fb, None)
+                                except Exception:
+                                    _scr_fb = None
+                                if not _scr_fb:
+                                    continue
+                                try:
+                                    _p_fb = _scr_fb.get_current_project() if hasattr(_scr_fb, "get_current_project") else getattr(_scr_fb, "current_project", None)
+                                except Exception:
+                                    _p_fb = None
+                                if isinstance(_p_fb, dict) and isinstance(_p_fb.get("questions"), list) and len(_p_fb.get("questions") or []) > 0:
+                                    _proj_direct = _p_fb
+                                    try:
+                                        self.project_manager.current_project = _p_fb
+                                    except Exception:
+                                        pass
+                                    break
+                    except Exception:
+                        pass
+                    try:
+                        _qs_direct = _proj_direct.get("questions", []) if isinstance(_proj_direct, dict) else []
+                        _total_direct = len(_qs_direct) if isinstance(_qs_direct, list) else 0
+                    except Exception:
+                        _qs_direct = []
+                        _total_direct = 0
+                    if _total_direct > 0:
+                        import re as _re_direct
+                        _is_all_direct = any(kw in _low_direct0 for kw in ["t\u1ea5t c\u1ea3", "tat ca", "to\u00e0n b\u1ed9", "toan bo", "h\u1ebft", "het"])
+                        _ids_direct = []
+                        if _is_all_direct:
+                            _m_all = _re_direct.search(r"(\d+)\s*c\u00e2u", _low_direct0)
+                            if _m_all:
+                                try:
+                                    _n_all = int(_m_all.group(1))
+                                    _n_all = max(1, min(_n_all, _total_direct))
+                                except Exception:
+                                    _n_all = _total_direct
+                            else:
+                                _n_all = _total_direct
+                            if _n_all >= _total_direct:
+                                for _qq in _qs_direct:
+                                    if isinstance(_qq, dict) and _qq.get("id"):
+                                        _ids_direct.append(str(_qq.get("id")))
+                            else:
+                                for _qq in _qs_direct[-_n_all:]:
+                                    if isinstance(_qq, dict) and _qq.get("id"):
+                                        _ids_direct.append(str(_qq.get("id")))
+                        else:
+                            try:
+                                from eduplay.core.ai_tool_payloads import extract_question_numbers as _ext_nums
+                                _hits = _ext_nums(msg) if _ext_nums else []
+                            except Exception:
+                                _hits = []
+                            _hits = [int(x) for x in _hits if 1 <= int(x) <= _total_direct]
+                            _hits = list(dict.fromkeys(_hits))
+                            if _hits:
+                                for _h in _hits:
+                                    try:
+                                        _cand = _qs_direct[int(_h)-1]
+                                        if isinstance(_cand, dict) and _cand.get("id"):
+                                            _ids_direct.append(str(_cand.get("id")))
+                                    except Exception:
+                                        continue
+                            else:
+                                _m_single = _re_direct.search(r"c\u00e2u\s*(?:s\u1ed1\s*)?(\d+)", _low_direct0)
+                                if _m_single:
+                                    try:
+                                        _nn = int(_m_single.group(1))
+                                        if 1 <= _nn <= _total_direct:
+                                            _cand2 = _qs_direct[_nn-1]
+                                            if isinstance(_cand2, dict) and _cand2.get("id"):
+                                                _ids_direct.append(str(_cand2.get("id")))
+                                    except Exception:
+                                        pass
+                                if not _ids_direct and any(kw in _low_direct0 for kw in ["cu\u1ed1i c\u00f9ng", "cuoi cung", "cu\u1ed1i", "cuoi"]):
+                                    try:
+                                        _cand_last = _qs_direct[-1]
+                                        if isinstance(_cand_last, dict) and _cand_last.get("id"):
+                                            _ids_direct.append(str(_cand_last.get("id")))
+                                    except Exception:
+                                        pass
+                        if _ids_direct:
+                            _ok_direct = 0
+                            _proj_direct_id = str(_proj_direct.get("id") or "").strip() if isinstance(_proj_direct, dict) else ""
+                            for _qid2 in _ids_direct:
+                                _deleted_via_manager = False
+                                try:
+                                    if self.project_manager.delete_question(_qid2):
+                                        _deleted_via_manager = True
+                                        _ok_direct += 1
+                                except Exception as _e_del:
+                                    try:
+                                        print(f"[AI-DIRECT] manager delete failed {_qid2}: {_e_del}")
+                                    except Exception:
+                                        pass
+                                if not _deleted_via_manager:
+                                    # Fallback: directly mutate editor's project (handles unsaved Chua luu case)
+                                    try:
+                                        for _nm_fb_del in ("editor_quiz_screen", "editor_fishing_screen", "editor_screen"):
+                                            try:
+                                                _scr_del = getattr(self, _nm_fb_del, None)
+                                            except Exception:
+                                                _scr_del = None
+                                            if not _scr_del:
+                                                continue
+                                            try:
+                                                _p_del = _scr_del.get_current_project() if hasattr(_scr_del, "get_current_project") else getattr(_scr_del, "current_project", None)
+                                            except Exception:
+                                                _p_del = None
+                                            if not isinstance(_p_del, dict):
+                                                continue
+                                            if _proj_direct_id and str(_p_del.get("id") or "").strip() != _proj_direct_id:
+                                                continue
+                                            _qs_del = _p_del.get("questions", []) if isinstance(_p_del, dict) else []
+                                            if not isinstance(_qs_del, list):
+                                                continue
+                                            _new_qs = [q for q in _qs_del if not (isinstance(q, dict) and str(q.get("id") or "").strip() == str(_qid2))]
+                                            if len(_new_qs) != len(_qs_del):
+                                                _p_del["questions"] = _new_qs
+                                                try:
+                                                    self.project_manager.current_project = _p_del
+                                                except Exception:
+                                                    pass
+                                                try:
+                                                    self.project_manager.save_project(_p_del)
+                                                except Exception:
+                                                    pass
+                                                # refresh editor's left panel
+                                                try:
+                                                    _p_del_id = str(_p_del.get("id") or "").strip()
+                                                    print(f"[AI-DIRECT] fallback delete {_qid2} from {_nm_fb_del} id={_p_del_id} -> ok")
+                                                except Exception:
+                                                    pass
+                                                _ok_direct += 1
+                                                # keep _proj_direct in sync for next iteration
+                                                _proj_direct = _p_del
+                                                _qs_direct = _new_qs
+                                                _total_direct = len(_qs_direct)
+                                                break
+                                        # also try _proj_direct itself if not via screen
+                                        if not _deleted_via_manager and _ok_direct == 0:
+                                            # _proj_direct fallback already tried via screens
+                                            pass
+                                    except Exception as _e_fb:
+                                        try:
+                                            print(f"[AI-DIRECT] fallback delete failed {_e_del}: {_e_fb}")
+                                        except Exception:
+                                            pass
+                            if _ok_direct:
+                                try:
+                                    _cur2 = self.project_manager.get_current_project()
+                                    if _cur2:
+                                        self._open_editor_for_project(_cur2)
+                                    else:
+                                        # if manager still empty, open from _proj_direct
+                                        self._open_editor_for_project(_proj_direct)
+                                except Exception:
+                                    pass
+                                try:
+                                    self.chat_widget.set_ai_response(f"\u0110\u00e3 xo\u00e1 {_ok_direct} c\u00e2u h\u1ecfi." if language == "vi" else f"Deleted {_ok_direct} questions.")
+                                    self.chat_widget.set_busy(False)
+                                except Exception:
+                                    pass
+                                return
+                            else:
+                                try:
+                                    print(f"[AI-DIRECT] _ids_direct={_ids_direct} but _ok_direct=0, proj id={_proj_direct_id} total={_total_direct}")
+                                except Exception:
+                                    pass
+                                # HARD FALLBACK: directly delete last QListWidgetItem if still not ok and message is "cuối"
+                                if not _ok_direct and any(kw in _low_direct0 for kw in ["cuối cùng", "cuoi cung", "cuối", "cuoi"]):
+                                    try:
+                                        for _nm_hard in ("editor_quiz_screen", "editor_fishing_screen", "editor_screen"):
+                                            try:
+                                                _scr_hard = getattr(self, _nm_hard, None)
+                                            except Exception:
+                                                _scr_hard = None
+                                            if not _scr_hard:
+                                                continue
+                                            _lp_hard = getattr(_scr_hard, "left_panel", None)
+                                            _ql_hard = getattr(_lp_hard, "questions_list", None) if _lp_hard else None
+                                            if _ql_hard is not None and int(_ql_hard.count()) > 0:
+                                                _idx_last = int(_ql_hard.count()) - 1
+                                                try:
+                                                    _it_last = _ql_hard.item(_idx_last)
+                                                except Exception:
+                                                    _it_last = None
+                                                if not _it_last:
+                                                    continue
+                                                try:
+                                                    from PySide6.QtCore import Qt
+                                                    _qobj_last = _it_last.data(Qt.UserRole)
+                                                except Exception:
+                                                    _qobj_last = None
+                                                if not isinstance(_qobj_last, dict):
+                                                    continue
+                                                _qid_last = str(_qobj_last.get("id") or "").strip()
+                                                if not _qid_last:
+                                                    continue
+                                                # ensure manager synced
+                                                try:
+                                                    _p_hard = _scr_hard.get_current_project() if hasattr(_scr_hard, "get_current_project") else getattr(_scr_hard, "current_project", None)
+                                                    if isinstance(_p_hard, dict):
+                                                        self.project_manager.current_project = _p_hard
+                                                except Exception:
+                                                    pass
+                                                # Try manager delete first
+                                                _deleted_hard = False
+                                                try:
+                                                    if self.project_manager.delete_question(_qid_last):
+                                                        _deleted_hard = True
+                                                        _ok_direct = 1
+                                                except Exception:
+                                                    _deleted_hard = False
+                                                if not _deleted_hard:
+                                                    try:
+                                                        _p_hard2 = getattr(_scr_hard, "current_project", None)
+                                                        if isinstance(_p_hard2, dict) and isinstance(_p_hard2.get("questions"), list):
+                                                            _new_qs_hard = [q for q in _p_hard2.get("questions", []) if str((q or {}).get("id") or "").strip() != _qid_last]
+                                                            if len(_new_qs_hard) != len(_p_hard2.get("questions", [])):
+                                                                _p_hard2["questions"] = _new_qs_hard
+                                                                try:
+                                                                    self.project_manager.current_project = _p_hard2
+                                                                except Exception:
+                                                                    pass
+                                                                try:
+                                                                    self.project_manager.save_project(_p_hard2)
+                                                                except Exception:
+                                                                    pass
+                                                                _ok_direct = 1
+                                                                _deleted_hard = True
+                                                    except Exception:
+                                                        pass
+                                                if _ok_direct:
+                                                    try:
+                                                        _cur_hard = self.project_manager.get_current_project()
+                                                        if _cur_hard:
+                                                            self._open_editor_for_project(_cur_hard)
+                                                        else:
+                                                            # fallback to screen's project
+                                                            try:
+                                                                _p_cur = _scr_hard.get_current_project() if hasattr(_scr_hard, "get_current_project") else getattr(_scr_hard, "current_project", None)
+                                                                if isinstance(_p_cur, dict):
+                                                                    self._open_editor_for_project(_p_cur)
+                                                            except Exception:
+                                                                pass
+                                                    except Exception:
+                                                        pass
+                                                    try:
+                                                        self.chat_widget.set_ai_response(f"Đã xoá {_ok_direct} câu hỏi." if language == "vi" else f"Deleted {_ok_direct} questions.")
+                                                        self.chat_widget.set_busy(False)
+                                                    except Exception:
+                                                        pass
+                                                    return
+                                    except Exception as _e_hard:
+                                        try:
+                                            print(f"[AI-DIRECT] hard fallback failed {_e_hard}")
+                                        except Exception:
+                                            pass
+            except Exception as _e0:
+                print(f"[AI] direct delete pre-AI failed {_e0}")
+
+            # === DIRECT IMAGE HANDLER (bypass AI) - thêm hình ảnh cho câu X ===
+            try:
+                _low_img = str(msg or "").lower()
+                _is_add_img = any(kw in _low_img for kw in ["thêm hình","them hinh","thêm ảnh","them anh","gắn ảnh","gan anh","gắn hình","gan hinh","chèn ảnh","chen anh","chèn hình","chen hinh","add image","set image","search image"])
+                if _is_add_img and any(kw in _low_img for kw in ["câu","cau","question"]):
+                    _qnum_img = None
+                    try:
+                        from eduplay.core.ai_tool_payloads import extract_question_numbers as _ext_img
+                        _hits_img = _ext_img(msg) if _ext_img else []
+                        if _hits_img:
+                            _qnum_img = int(_hits_img[0])
+                    except Exception:
+                        pass
+                    if _qnum_img is None:
+                        try:
+                            import re as _re_img
+                            _m_img = _re_img.search(r"câu\s*(?:hỏi)?\s*(?:số\s*)?(\d+)", _low_img, flags=_re_img.IGNORECASE)
+                            if _m_img:
+                                _qnum_img = int(_m_img.group(1))
+                        except Exception:
+                            pass
+                    if _qnum_img is not None and _qnum_img >= 1:
+                        _proj_img = None
+                        _qs_img = []
+                        try:
+                            _proj_img = self.project_manager.get_current_project() or {}
+                            _qs_img = _proj_img.get("questions", []) if isinstance(_proj_img, dict) else []
+                            if not isinstance(_qs_img, list) or len(_qs_img) < _qnum_img:
+                                for _nm_i in ("editor_quiz_screen","editor_fishing_screen","editor_screen"):
+                                    try:
+                                        _scr_i = getattr(self, _nm_i, None)
+                                    except Exception:
+                                        _scr_i = None
+                                    if not _scr_i:
+                                        continue
+                                    try:
+                                        _p_i = _scr_i.get_current_project() if hasattr(_scr_i, "get_current_project") else getattr(_scr_i, "current_project", None)
+                                    except Exception:
+                                        _p_i = None
+                                    if isinstance(_p_i, dict) and isinstance(_p_i.get("questions"), list) and len(_p_i.get("questions", [])) >= _qnum_img:
+                                        _proj_img = _p_i
+                                        _qs_img = _p_i.get("questions", [])
+                                        try:
+                                            self.project_manager.current_project = _p_i
+                                        except Exception:
+                                            pass
+                                        break
+                        except Exception:
+                            pass
+                        if isinstance(_qs_img, list) and 1 <= _qnum_img <= len(_qs_img):
+                            _target_q = _qs_img[_qnum_img-1]
+                            if isinstance(_target_q, dict):
+                                _qid_img = str(_target_q.get("id") or "").strip()
+                                # FIX: auto-assign id nếu câu hỏi thiếu id (Q6 trong screenshot không có id -> gây Thiếu question_id)
+                                if not _qid_img:
+                                    try:
+                                        import uuid as _uuid_img
+                                        _new_id = f"q_{_uuid_img.uuid4().hex[:10]}"
+                                        _target_q["id"] = _new_id
+                                        _qid_img = _new_id
+                                        # đồng bộ lại vào project và lưu ngay để lần sau không thiếu
+                                        try:
+                                            if isinstance(_proj_img, dict):
+                                                _proj_img["questions"][_qnum_img-1] = _target_q
+                                                try:
+                                                    self.project_manager.current_project = _proj_img
+                                                except Exception:
+                                                    pass
+                                                try:
+                                                    self.project_manager.save_project(_proj_img)
+                                                except Exception:
+                                                    pass
+                                        except Exception:
+                                            pass
+                                        print(f"[AI-DIRECT-IMAGE] auto-assigned missing id for Q{_qnum_img}: {_qid_img}")
+                                    except Exception:
+                                        _qid_img = ""
+                                _qtext_img = str(_target_q.get("question") or "").strip()
+                                _is_generic = False
+                                try:
+                                    _low_q = _qtext_img.lower().strip()
+                                    if not _low_q or _low_q in ["câu hỏi mới","cau hoi moi"] or len(_low_q) < 5:
+                                        _is_generic = True
+                                except Exception:
+                                    _is_generic = False
+                                if not _is_generic:
+                                    # Build query from correct answer + question for image relevance
+                                    _correct_text = ""
+                                    try:
+                                        _opts = _target_q.get("options") if isinstance(_target_q.get("options"), list) else None
+                                        _ca = _target_q.get("correct_answer")
+                                        # Case 1: options là list string + correct_answer index
+                                        if isinstance(_opts, list) and isinstance(_ca, int) and 0 <= _ca < len(_opts):
+                                            _cand = _opts[_ca]
+                                            if isinstance(_cand, dict):
+                                                _correct_text = str(_cand.get("text") or _cand.get("label") or _cand.get("value") or "").strip()
+                                            else:
+                                                _correct_text = str(_cand or "").strip()
+                                        # Case 2: options là list dict với {"text":..., "correct": true} (Q6 trong file thiếu id dùng format này)
+                                        if not _correct_text and isinstance(_opts, list):
+                                            for _o in _opts:
+                                                if isinstance(_o, dict) and _o.get("correct"):
+                                                    _correct_text = str(_o.get("text") or _o.get("label") or "").strip()
+                                                    if _correct_text:
+                                                        break
+                                                elif isinstance(_o, str) and not _correct_text:
+                                                    # fallback handled by correct_answer above
+                                                    pass
+                                        if not _correct_text:
+                                            _ans = _target_q.get("answers")
+                                            if isinstance(_ans, list) and _ans:
+                                                _correct_text = str(_ans[0] or "").strip()
+                                            elif isinstance(_ans, str) and _ans.strip():
+                                                _correct_text = str(_ans).strip()
+                                        if not _correct_text and str(_target_q.get("type") or "").lower() == "true_false":
+                                            _ca_b = _target_q.get("correct_answer")
+                                            if isinstance(_ca_b, bool):
+                                                _correct_text = "đúng" if _ca_b else "sai"
+                                    except Exception:
+                                        _correct_text = ""
+                                    _query_img = ""
+                                    try:
+                                        import re as _re_q
+                                        _is_img_q = bool(_re_q.search(r"^\s*Hình ảnh", _qtext_img, flags=_re_q.IGNORECASE))
+                                        if _is_img_q and _correct_text:
+                                            _query_img = _correct_text
+                                            # add topic if question mentions "bạo lực" and correct doesn't
+                                            if "bạo lực" in _qtext_img.lower() and "bạo lực" not in _correct_text.lower():
+                                                _query_img = _correct_text + " bạo lực học đường"
+                                            elif "bạo lực" in _correct_text.lower():
+                                                pass
+                                            else:
+                                                # generic: correct + first 30 chars of question without prefix
+                                                _tmp_q = _re_q.sub(r"^\s*Hình ảnh.*?\?\s*", "", _qtext_img, flags=_re_q.IGNORECASE).strip()
+                                                if _tmp_q and len(_tmp_q) > 5:
+                                                    _query_img = _correct_text + " " + _tmp_q[:30]
+                                            _query_img = _query_img.strip()
+                                            if len(_query_img) < 4:
+                                                _query_img = (_correct_text + " minh họa").strip()
+                                        else:
+                                            _query_img = _qtext_img
+                                            _query_img = _re_q.sub(r"^\s*Hình ảnh.*?(là|gì).*?\?\s*", "", _query_img, flags=_re_q.IGNORECASE).strip()
+                                            _query_img = _re_q.sub(r"^\s*Ảnh.*?\?\s*", "", _query_img, flags=_re_q.IGNORECASE).strip()
+                                            if _correct_text and len(_correct_text) > 2:
+                                                _query_img = f"{_query_img} {_correct_text}".strip()
+                                            if not _query_img or len(_query_img) < 5:
+                                                _query_img = _correct_text or _qtext_img
+                                            _query_img = _query_img[:80].strip().strip("? .")
+                                            if len(_query_img) < 3:
+                                                _query_img = (_correct_text or _qtext_img)[:80]
+                                        if "Hình ảnh" in _query_img and _correct_text:
+                                            _query_img = _correct_text
+                                    except Exception:
+                                        _query_img = (_correct_text or _qtext_img)[:80]
+                                    if _query_img:
+                                        try:
+                                            ai_settings = self.settings_manager.get_ai_settings() or {} if self.settings_manager else {}
+                                            allow_net = bool(ai_settings.get("allow_internet", False))
+                                            allow_img = bool(ai_settings.get("allow_image_download", False))
+                                        except Exception:
+                                            allow_net = False
+                                            allow_img = False
+                                        if not (allow_net and allow_img):
+                                            try:
+                                                self.chat_widget.set_ai_response("Chức năng tìm ảnh trên mạng đang tắt. Vào Cài đặt → AI → bật 'Cho phép truy cập Internet' và 'Cho phép tải ảnh' nhé." if language=="vi" else "Internet image search is disabled. Enable it in Settings → AI.")
+                                                self.chat_widget.set_busy(False)
+                                            except Exception:
+                                                pass
+                                            return
+                                        try:
+                                            import json as _json_img
+                                            _args_img = _json_img.dumps({"question_id": _qid_img, "query": _query_img, "question_number": _qnum_img}, ensure_ascii=False)
+                                            print(f"[AI-DIRECT-IMAGE] auto query for Q{_qnum_img}: {_query_img} id={_qid_img}")
+                                            res_img = self._execute_ai_tool("SEARCH_IMAGE", _args_img)
+                                            if res_img and res_img.get("ok"):
+                                                try:
+                                                    self.chat_widget.set_ai_response(f"Đã thêm hình ảnh cho câu {_qnum_img}." if language=="vi" else f"Added image to question {_qnum_img}.")
+                                                    self.chat_widget.set_busy(False)
+                                                except Exception:
+                                                    pass
+                                            else:
+                                                try:
+                                                    self.chat_widget.set_ai_response(f"Đã tìm ảnh cho câu {_qnum_img} với từ khóa '{_query_img}'." if language=="vi" else f"Searched image for Q{_qnum_img} with '{_query_img}'.")
+                                                    self.chat_widget.set_busy(False)
+                                                except Exception:
+                                                    pass
+                                            return
+                                        except Exception as _e_img_exec:
+                                            try:
+                                                print(f"[AI-DIRECT-IMAGE] exec failed {_e_img_exec}")
+                                            except Exception:
+                                                pass
+            except Exception as _e_img_direct:
+                try:
+                    print(f"[AI] direct image handler failed {_e_img_direct}")
+                except Exception:
+                    pass
 
             focus_title = ""
             try:
@@ -4742,6 +6532,22 @@ QLabel {
                         break
                 user_hist.reverse()
                 app_context["chat_history"] = user_hist
+            except Exception:
+                pass
+            # Memory: tóm tắt gọn + 5 tin gần nhất để giảm token
+            try:
+                if getattr(self, "memory_manager", None):
+                    # cập nhật tin mới vào bộ nhớ
+                    try:
+                        self.memory_manager.add_user_message(msg)
+                    except Exception:
+                        pass
+                    mem_ctx = self.memory_manager.get_context_for_ai()
+                    # summary gọn, recent 5
+                    app_context["memory_summary"] = mem_ctx.get("memory_summary", "")
+                    app_context["recent_memory"] = mem_ctx.get("recent_messages", [])
+                    # để AI hiểu rõ: recent_memory là 5 tin gần nhất, không cần gửi lại toàn bộ history dài
+                    # giữ chat_history như cũ để tương thích, nhưng ưu tiên recent_memory
             except Exception:
                 pass
 
@@ -5658,6 +7464,74 @@ QLabel {
                                 "READ_PROJECT_DETAILS",
                                 "WEB_SEARCH",
                                 "WEB_FETCH",
+                                "NAVIGATE",
+                                "GO_HOME",
+                                "OPEN_BROWSER",
+                                "OPEN_EDITOR",
+                                "OPEN_SETTINGS",
+                                "SHOW_SETTINGS",
+                                "SETTINGS",
+                                "OPEN_HELP",
+                                "SHOW_HELP",
+                                "HELP",
+                                "OPEN_COMMAND_PALETTE",
+                                "SHOW_COMMAND_PALETTE",
+                                "COMMAND_PALETTE",
+                                "DUPLICATE_QUESTION",
+                                "DUPLICATE_PROJECT",
+                                "DELETE_PROJECT",
+                                "UPDATE_PROJECT",
+                                "RENAME_PROJECT",
+                                "SAVE_PROJECT",
+                                "BACKUP_PROJECT",
+                                "LIST_PROJECTS",
+                                "LIST_QUESTIONS",
+                                "COUNT_QUESTIONS",
+                                "SET_QUESTION_TIME",
+                                "SET_POINTS",
+                                "SET_SCORE",
+                                "ENABLE_SHUFFLE",
+                                "DISABLE_SHUFFLE",
+                                "TOGGLE_EXPLANATION",
+                                "SET_EXAM_MODE",
+                                "SET_MUSIC",
+                                "REORDER_QUESTIONS",
+                                "SHUFFLE_NOW",
+                                "REMOVE_DUPLICATES",
+                                "CLEAN_DUPLICATES",
+                                "PREVIEW",
+                                "OPEN_PREVIEW",
+                                "SHOW_PREVIEW",
+                                "EXPORT_HTML",
+                                "EXPORT_INTERNAL",
+                                "EXPORT_WEB",
+                                "PUBLISH_WEB",
+                                "PUBLISH",
+                                "TAKE_SCREENSHOT",
+                                "SCREENSHOT",
+                                "APP_INFO",
+                                "ABOUT_APP",
+                                "CALCULATE",
+                                "SOLVE_MATH",
+                                "SET_THEME",
+                                "SET_LANGUAGE",
+                                "SET_FONT",
+                                "UPDATE_TAGS",
+                                "ADD_TAG",
+                                "REMOVE_TAG",
+                                "SEARCH_PROJECTS",
+                                "GET_STATS",
+                                "PROJECT_STATS",
+                                "STATS",
+                                "CLEAR_CHAT",
+                                "RESET_MEMORY",
+                                "CLEAR_MEMORY",
+                                "TRANSLATE_QUESTION",
+                                "SUMMARIZE_PROJECT",
+                                "IMPORT_QUESTIONS",
+                                "AUTO_CREATE_FULL_PROJECT",
+                                "GENERATE_FROM_IMAGE",
+                                "SPLIT_DOCUMENT",
                             )
                             norm = str(text or "")
                             try:
@@ -5827,6 +7701,46 @@ QLabel {
                                 if wants_open_project and not create_strict:
                                     wants_project_create = False
                                 wants_delete = any(k in ml for k in ("xóa", "xoá", "delete", "remove"))
+                                wants_duplicate = any(k in ml for k in ("nhân bản", "nhan ban", "sao chép", "sao chep", "duplicate", "copy", "nhân đôi", "nhan doi"))
+                                wants_preview = any(k in ml for k in ("xem trước", "xem truoc", "preview", "chơi thử", "choi thu", "xem thu"))
+                                wants_export = any(k in ml for k in ("xuất", "xuat", "export", "xuất html", "xuat html", "xuất web", "xuat web", "publish"))
+                                wants_navigate = any(k in ml for k in ("đi tới", "di toi", "chuyển", "chuyen", "mở màn hình", "mo man hinh", "navigate", "điều hướng", "dieu huong")) or any(x in ml for x in ("trang chủ", "trang chu", "home", "browser", "dự án", "du an"))
+                                wants_settings = any(k in ml for k in ("cài đặt", "cai dat", "settings", "cấu hình chung", "cau hinh chung"))
+                                wants_help = any(k in ml for k in ("trợ giúp", "tro giup", "help", "hướng dẫn", "huong dan"))
+                                wants_project_duplicate = wants_duplicate and any(k in ml for k in ("dự án", "du an", "project"))
+                                wants_question_duplicate = wants_duplicate and any(k in ml for k in ("câu hỏi", "cau hoi", "question"))
+                                wants_theme = any(k in ml for k in ("giao diện", "giao dien", "theme", "dark", "light", "tối", "sáng", "chế độ tối", "che do toi"))
+                                wants_language = any(k in ml for k in ("ngôn ngữ", "ngon ngu", "language", "tiếng việt", "tieng viet", "english", "français", "español", "deutsch"))
+                                wants_tags = any(k in ml for k in ("tag", "thẻ", "nhãn", "từ khóa", "tu khoa"))
+                                wants_search_projects = any(k in ml for k in ("tìm dự án", "tim du an", "search project", "lọc dự án", "loc du an"))
+                                wants_stats = any(k in ml for k in ("thống kê", "thong ke", "stats", "số lượng", "so luong", "bao nhiêu câu", "bao nhieu cau"))
+                                wants_clear = any(k in ml for k in ("xóa chat", "xoa chat", "clear chat", "xóa bộ nhớ", "xoa bo nho", "reset memory", "làm mới", "lam moi"))
+                                wants_translate = any(k in ml for k in ("dịch", "dich", "translate", "chuyển ngữ", "chuyen ngu"))
+                                wants_summarize = any(k in ml for k in ("tóm tắt", "tom tat", "summarize", "tổng kết", "tong ket"))
+                                wants_import = any(k in ml for k in ("nhập", "nhap", "import", "nhập khẩu"))
+                                wants_auto_create = any(k in ml for k in ("tự động tạo", "tu dong tao", "auto create", "tạo nhanh", "tao nhanh", "tạo full", "tao full"))
+                                wants_from_image = any(k in ml for k in ("từ ảnh", "tu anh", "from image", "tạo từ ảnh", "tao tu anh"))
+                                wants_split = any(k in ml for k in ("tách", "tach", "split", "chia chương", "chia bai", "tách chương"))
+                                # SỬA 2026-09-19: intents mới cho 50+ công việc
+                                wants_save = any(k in ml for k in ("lưu dự án", "luu du an", "save project", "lưu lại", "luu lai", "save"))
+                                wants_list_projects = any(k in ml for k in ("liệt kê dự án", "liet ke du an", "danh sách dự án", "danh sach du an", "list projects", "liệt kê project", "xem tất cả dự án"))
+                                wants_list_questions = any(k in ml for k in ("liệt kê câu hỏi", "liet ke cau hoi", "danh sách câu hỏi", "danh sach cau hoi", "list questions", "xem tất cả câu hỏi", "xem cac cau hoi"))
+                                wants_count = any(k in ml for k in ("đếm câu", "dem cau", "count questions", "bao nhiêu câu", "bao nhieu cau", "đếm số câu", "how many questions"))
+                                wants_time = any(k in ml for k in ("thời gian mỗi câu", "thoi gian moi cau", "question_time", "set time", "đặt thời gian", "dat thoi gian", "đổi thời gian", "doi thoi gian"))
+                                wants_points = any(k in ml for k in ("điểm số", "diem so", "points", "score", "đặt điểm", "dat diem", "đổi điểm", "doi diem", "điểm mỗi câu"))
+                                wants_shuffle = any(k in ml for k in ("trộn", "tron", "shuffle", "xáo trộn", "xao tron", "ngẫu nhiên", "ngau nhien", "randomize"))
+                                wants_explanation_toggle = any(k in ml for k in ("giải thích", "giai thich", "explanation", "hiện giải thích", "hien giai thich", "ẩn giải thích", "an giai thich"))
+                                wants_exam_mode = any(k in ml for k in ("chế độ thi", "che do thi", "exam mode", "cho làm lại", "cho lam lai", "1 lần", "1 lan", "retry", "thi thử"))
+                                wants_music = any(k in ml for k in ("nhạc nền", "nhac nen", "music", "nhạc", "nhac", "âm thanh nền", "background music"))
+                                wants_reorder = any(k in ml for k in ("sắp xếp", "sap xep", "reorder", "đảo thứ tự", "dao thu tu", "sắp xếp lại", "xáo thứ tự"))
+                                wants_dedup = any(k in ml for k in ("trùng lặp", "trung lap", "duplicate", "xóa trùng", "xoa trung", "lọc trùng", "loc trung", "deduplicate", "clean duplicate"))
+                                wants_screenshot = any(k in ml for k in ("chụp màn hình", "chup man hinh", "screenshot", "chụp ảnh màn hình", "capture"))
+                                wants_appinfo = any(k in ml for k in ("thông tin app", "thong tin app", "về app", "ve app", "về eduplay", "ve eduplay", "about eduplay", "about edubot", "about the app", "about this app", "tác giả", "tac gia", "ai tạo", "ai tao", "ai phát triển", "ai phat trien", "do ai", "người tạo", "nguoi tao", "nhà phát triển", "nha phat trien", "phiên bản", "phien ban", "version", "who made", "who developed", "app developer", "the developer", "email", "mail hỗ trợ", "website", "trang web", "site chính thức", "liên hệ", "lien he", "contact support", "contact us", "contact eduplay", "support email", "official website", "développeur", "qui a créé", "site officiel", "courriel", "desarrollador", "quién creó", "quien creo", "contacto", "sitio oficial", "correo", "entwickler", "wer hat", "kontakt", "offizielle website"))
+                                wants_calculate = any(k in ml for k in ("tính", "tinh", "calculate", "cộng", "cong", "trừ", "tru", "nhân", "nhan", "chia", "bằng bao nhiêu", "bang bao nhieu", "kết quả", "ket qua")) and any(ch.isdigit() for ch in ml)
+                                wants_go_home = any(k in ml for k in ("về trang chủ", "ve trang chu", "go home", "trang chủ", "trang chu")) and any(k in ml for k in ("về", "ve", "go", "quay lại", "quay lai", "mở trang chủ"))
+                                wants_open_browser = any(k in ml for k in ("mở duyệt", "mo duyet", "duyệt dự án", "duyet du an", "browse", "open browser", "xem dự án"))
+                                wants_open_editor = any(k in ml for k in ("mở soạn", "mo soan", "mở chỉnh sửa", "mo chinh sua", "open editor", "soạn thảo", "soan thao"))
+                                wants_backup = any(k in ml for k in ("sao lưu", "sao luu", "backup", "xuất file dự án", "xuat file du an", ".eduplay"))
                                 wants_questions = any(
                                     k in ml
                                     for k in (
@@ -5885,17 +7799,56 @@ QLabel {
                                 )
                                 wants_questions = wants_questions and (wants_add_into_project or wants_generate or wants_edit)
 
-                                wants_action = wants_questions or wants_edit or wants_delete or wants_project_create or wants_open_project
+                                wants_action = wants_questions or wants_edit or wants_delete or wants_project_create or wants_open_project or wants_duplicate or wants_preview or wants_export or wants_navigate or wants_settings or wants_help or wants_project_duplicate or wants_question_duplicate or wants_theme or wants_language or wants_tags or wants_search_projects or wants_stats or wants_clear or wants_translate or wants_summarize or wants_import or wants_auto_create or wants_from_image or wants_split or wants_save or wants_list_projects or wants_list_questions or wants_count or wants_time or wants_points or wants_shuffle or wants_explanation_toggle or wants_exam_mode or wants_music or wants_reorder or wants_dedup or wants_screenshot or wants_appinfo or wants_calculate or wants_go_home or wants_open_browser or wants_open_editor or wants_backup
                                 return {
                                     "ml": ml,
                                     "is_greeting": is_greeting,
                                     "wants_questions": wants_questions,
                                     "wants_edit": wants_edit,
                                     "wants_image": wants_image,
-                                    "wants_config": wants_config,
+                                    "wants_config": wants_config or wants_time or wants_points or wants_shuffle or wants_explanation_toggle or wants_exam_mode or wants_music,
                                     "wants_project_create": wants_project_create,
-                                    "wants_open_project": wants_open_project,
+                                    "wants_open_project": wants_open_project or wants_open_browser or wants_open_editor,
                                     "wants_delete": wants_delete,
+                                    "wants_auto_create": wants_auto_create,
+                                    "wants_from_image": wants_from_image,
+                                    "wants_split": wants_split,
+                                    "wants_theme": wants_theme,
+                                    "wants_language": wants_language,
+                                    "wants_tags": wants_tags,
+                                    "wants_search_projects": wants_search_projects or wants_list_projects,
+                                    "wants_stats": wants_stats or wants_count,
+                                    "wants_clear": wants_clear,
+                                    "wants_translate": wants_translate,
+                                    "wants_summarize": wants_summarize,
+                                    "wants_import": wants_import,
+                                    "wants_duplicate": wants_duplicate,
+                                    "wants_preview": wants_preview,
+                                    "wants_export": wants_export,
+                                    "wants_navigate": wants_navigate or wants_go_home or wants_open_browser or wants_open_editor,
+                                    "wants_settings": wants_settings,
+                                    "wants_help": wants_help,
+                                    "wants_project_duplicate": wants_project_duplicate,
+                                    "wants_question_duplicate": wants_question_duplicate,
+                                    "wants_save": wants_save,
+                                    "wants_list_projects": wants_list_projects,
+                                    "wants_list_questions": wants_list_questions,
+                                    "wants_count": wants_count,
+                                    "wants_time": wants_time,
+                                    "wants_points": wants_points,
+                                    "wants_shuffle": wants_shuffle,
+                                    "wants_explanation_toggle": wants_explanation_toggle,
+                                    "wants_exam_mode": wants_exam_mode,
+                                    "wants_music": wants_music,
+                                    "wants_reorder": wants_reorder,
+                                    "wants_dedup": wants_dedup,
+                                    "wants_screenshot": wants_screenshot,
+                                    "wants_appinfo": wants_appinfo,
+                                    "wants_calculate": wants_calculate,
+                                    "wants_go_home": wants_go_home,
+                                    "wants_open_browser": wants_open_browser,
+                                    "wants_open_editor": wants_open_editor,
+                                    "wants_backup": wants_backup,
                                     "wants_action": wants_action,
                                 }
 
@@ -5936,9 +7889,9 @@ QLabel {
                                         if intent.get("wants_edit"):
                                             filtered.append((c, a))
                                         continue
-                                    if c == "DELETE_QUESTION":
+                                    if c in ("DELETE_QUESTION", "REMOVE_QUESTION", "REMOVE_QUESTIONS", "DEL_QUESTION", "DEL_QUESTIONS"):
                                         if intent.get("wants_delete"):
-                                            filtered.append((c, a))
+                                            filtered.append(("DELETE_QUESTION", a))
                                         continue
                                     if c in ("SET_QUESTION_IMAGE", "SET_QUESTION_IMAGE_URL", "SEARCH_IMAGE"):
                                         if intent.get("wants_image") or intent.get("wants_questions") or intent.get("wants_edit"):
@@ -5950,6 +7903,177 @@ QLabel {
                                         continue
                                     if c in info_cmds:
                                         filtered.append((c, a))
+                                        continue
+                                    # New tools: duplicate, preview, export, navigate, settings, help etc.
+                                    if c == "DUPLICATE_QUESTION":
+                                        if intent.get("wants_question_duplicate") or intent.get("wants_duplicate"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "DUPLICATE_PROJECT":
+                                        if intent.get("wants_project_duplicate") or intent.get("wants_duplicate"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "DELETE_PROJECT":
+                                        if intent.get("wants_delete"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c in ("PREVIEW", "OPEN_PREVIEW", "SHOW_PREVIEW"):
+                                        if intent.get("wants_preview"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c in ("EXPORT_HTML", "EXPORT_INTERNAL", "EXPORT_WEB", "PUBLISH_WEB", "PUBLISH", "XUAT_NOI_BO", "XUAT_LEN_WEB"):
+                                        if intent.get("wants_export") or intent.get("wants_preview"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "NAVIGATE":
+                                        if intent.get("wants_navigate") or intent.get("wants_action"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c in ("OPEN_SETTINGS", "SHOW_SETTINGS", "SETTINGS"):
+                                        if intent.get("wants_settings"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c in ("OPEN_HELP", "SHOW_HELP", "HELP"):
+                                        if intent.get("wants_help"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c in ("OPEN_COMMAND_PALETTE", "SHOW_COMMAND_PALETTE", "COMMAND_PALETTE"):
+                                        # luôn cho phép palette
+                                        filtered.append((c, a))
+                                        continue
+                                    if c in ("UPDATE_PROJECT", "RENAME_PROJECT"):
+                                        # cho phép khi có ý định đổi tên dự án
+                                        if any(k in str(intent.get("ml") or "") for k in ("đổi tên", "doi ten", "rename", "tên dự án", "ten du an")):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "SET_THEME":
+                                        if intent.get("wants_theme"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "SET_LANGUAGE":
+                                        if intent.get("wants_language"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c in ("SET_FONT", "UPDATE_FONT"):
+                                        if intent.get("wants_theme") or "font" in str(intent.get("ml") or ""):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c in ("UPDATE_TAGS", "ADD_TAG", "REMOVE_TAG"):
+                                        if intent.get("wants_tags"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c in ("SEARCH_PROJECTS", "FILTER_PROJECTS"):
+                                        if intent.get("wants_search_projects"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c in ("GET_STATS", "PROJECT_STATS", "STATS"):
+                                        if intent.get("wants_stats"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c in ("CLEAR_CHAT", "CLEAR_MEMORY", "RESET_MEMORY"):
+                                        if intent.get("wants_clear"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "TRANSLATE_QUESTION":
+                                        if intent.get("wants_translate"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "SUMMARIZE_PROJECT":
+                                        if intent.get("wants_summarize"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "IMPORT_QUESTIONS":
+                                        if intent.get("wants_import"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "AUTO_CREATE_FULL_PROJECT":
+                                        if intent.get("wants_auto_create"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "GENERATE_FROM_IMAGE":
+                                        if intent.get("wants_from_image"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "SPLIT_DOCUMENT":
+                                        if intent.get("wants_split"):
+                                            filtered.append((c, a))
+                                        continue
+                                    # SỬA 2026-09-19: 20 tools mới cho 50+ công việc
+                                    if c == "SAVE_PROJECT":
+                                        if intent.get("wants_save") or intent.get("wants_action"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "BACKUP_PROJECT":
+                                        if intent.get("wants_backup") or intent.get("wants_export"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "LIST_PROJECTS":
+                                        if intent.get("wants_list_projects") or intent.get("wants_search_projects"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "LIST_QUESTIONS":
+                                        if intent.get("wants_list_questions") or intent.get("wants_stats"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "COUNT_QUESTIONS":
+                                        if intent.get("wants_count") or intent.get("wants_stats"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "SET_QUESTION_TIME":
+                                        if intent.get("wants_time") or intent.get("wants_config"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c in ("SET_POINTS", "SET_SCORE"):
+                                        if intent.get("wants_points") or intent.get("wants_config"):
+                                            filtered.append((("SET_POINTS"), a))
+                                        continue
+                                    if c in ("ENABLE_SHUFFLE", "DISABLE_SHUFFLE"):
+                                        if intent.get("wants_shuffle") or intent.get("wants_config"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "TOGGLE_EXPLANATION":
+                                        if intent.get("wants_explanation_toggle") or intent.get("wants_config"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "SET_EXAM_MODE":
+                                        if intent.get("wants_exam_mode") or intent.get("wants_config"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "SET_MUSIC":
+                                        if intent.get("wants_music") or intent.get("wants_config"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c in ("REORDER_QUESTIONS", "SHUFFLE_NOW"):
+                                        if intent.get("wants_reorder") or intent.get("wants_shuffle"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c in ("REMOVE_DUPLICATES", "CLEAN_DUPLICATES"):
+                                        if intent.get("wants_dedup"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c in ("TAKE_SCREENSHOT", "SCREENSHOT"):
+                                        if intent.get("wants_screenshot"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c in ("APP_INFO", "ABOUT_APP"):
+                                        if intent.get("wants_appinfo"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c in ("CALCULATE", "SOLVE_MATH"):
+                                        if intent.get("wants_calculate"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "GO_HOME":
+                                        if intent.get("wants_go_home") or intent.get("wants_navigate"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "OPEN_BROWSER":
+                                        if intent.get("wants_open_browser") or intent.get("wants_navigate") or intent.get("wants_open_project"):
+                                            filtered.append((c, a))
+                                        continue
+                                    if c == "OPEN_EDITOR":
+                                        if intent.get("wants_open_editor") or intent.get("wants_navigate"):
+                                            filtered.append((c, a))
                                         continue
                                 return filtered
 
@@ -6158,6 +8282,91 @@ QLabel {
                                 requested_count = _detect_requested_question_count(msg) if intent.get("wants_questions") else None
                                 matches, display_text = _extract_tools(cur_text)
                                 matches = _filter_tools(matches, intent)
+                                # Fallback B: AI đôi khi trả JSON trần thay vì ADD_QUESTION: {json} — gom lại để app vẫn nhận
+                                try:
+                                    import json as _json_bare
+                                    import re as _re_bare
+                                    _bare = []
+                                    _clean_fb = str(cur_text or "")
+                                    _clean_fb = _re_bare.sub(r"```(?:json)?\s*([\s\S]*?)\s*```", r"\1", _clean_fb, flags=_re_bare.IGNORECASE)
+                                    if (not matches) and intent.get("wants_questions"):
+                                        for _mm in _re_bare.finditer(r"\{[^{}]*\"question\"\s*:\s*\"[^\"]*\"[^{}]*\}", _clean_fb):
+                                            _blk = _mm.group(0)
+                                            try:
+                                                _obj = _json_bare.loads(_blk)
+                                            except Exception:
+                                                try:
+                                                    import ast as _ast_bare
+                                                    _obj = _ast_bare.literal_eval(_blk)
+                                                except Exception:
+                                                    continue
+                                            if isinstance(_obj, dict) and _obj.get("question"):
+                                                _obj.pop("action", None)
+                                                if not _obj.get("type"):
+                                                    if isinstance(_obj.get("options"), list):
+                                                        _obj["type"] = "multiple_choice"
+                                                    elif isinstance(_obj.get("answers"), list):
+                                                        _obj["type"] = "fill_blank" if "___" in str(_obj.get("question") or "") else "short_answer"
+                                                    elif "correct_answer" in _obj:
+                                                        _obj["type"] = "true_false" if isinstance(_obj.get("correct_answer"), bool) else "multiple_choice"
+                                                _bare.append(_obj)
+                                        if _bare:
+                                            for _b in _bare:
+                                                try:
+                                                    matches.append(("ADD_QUESTION", _json_bare.dumps(_b, ensure_ascii=False)))
+                                                except Exception:
+                                                    continue
+                                            try:
+                                                display_text = _re_bare.sub(r"\{[^{}]*\"question\"\s*:\s*\"[^\"]*\"[^{}]*\}", "", display_text)
+                                                display_text = _re_bare.sub(r"\n\s*\n", "\n", display_text).strip()
+                                            except Exception:
+                                                pass
+                                except Exception:
+                                    pass
+                                # Fallback: AI đôi khi chỉ trả JSON {"question_number":1} không có prefix DELETE_QUESTION
+                                if not matches and intent.get("wants_delete"):
+                                    try:
+                                        import re as _re_fb
+                                        import json as _json_fb
+                                        _found = []
+                                        for _m in _re_fb.finditer(r'"question_number"\s*:\s*"?(\d+)"?', cur_text):
+                                            try:
+                                                _num = int(_m.group(1))
+                                                if 1 <= _num <= 500 and _num not in _found:
+                                                    _found.append(_num)
+                                            except Exception:
+                                                continue
+                                        if _found:
+                                            try:
+                                                _proj_fb = self.project_manager.get_current_project() or {}
+                                                _qs_fb = _proj_fb.get("questions", []) if isinstance(_proj_fb, dict) else []
+                                            except Exception:
+                                                _qs_fb = []
+                                            for _n in _found:
+                                                try:
+                                                    _qid_fb = ""
+                                                    if 1 <= int(_n) <= len(_qs_fb):
+                                                        _cand = _qs_fb[int(_n)-1]
+                                                        if isinstance(_cand, dict):
+                                                            _qid_fb = str(_cand.get("id") or "").strip()
+                                                    if _qid_fb:
+                                                        matches.append(("DELETE_QUESTION", _json_fb.dumps({"question_id": _qid_fb})))
+                                                    else:
+                                                        matches.append(("DELETE_QUESTION", _json_fb.dumps({"question_number": int(_n)})))
+                                                except Exception:
+                                                    try:
+                                                        matches.append(("DELETE_QUESTION", _json_fb.dumps({"question_number": int(_n)})))
+                                                    except Exception:
+                                                        continue
+                                            try:
+                                                display_text = _re_fb.sub(r'\{[^{}]*"question_number"\s*:\s*"?\d+"?[^{}]*\}', '', display_text)
+                                                display_text = _re_fb.sub(r'"question_number"\s*:\s*"?\d+"?', '', display_text)
+                                                display_text = _re_fb.sub(r'\n\s*\n', '\n', display_text).strip()
+                                                display_text = display_text.strip()
+                                            except Exception:
+                                                pass
+                                    except Exception:
+                                        pass
                                 try:
                                     if debug_ai:
                                         mnames = [str(c or "") for c, _a in (matches or [])][:8]
@@ -6242,16 +8451,135 @@ QLabel {
                                 except Exception:
                                     sent = ""
                                 if sent in ("ko có trong danh sách lệnh", "không có trong danh sách lệnh"):
+                                    # SỬA 2026-09-19: KHÔNG bao giờ nói "chưa hỗ trợ".
+                                    # AI báo không ánh xạ được tool -> trả lời tự nhiên / hướng dẫn thủ công.
+                                    try:
+                                        _fb_display = str(display_text or "").strip()
+                                    except Exception:
+                                        _fb_display = ""
+                                    if _fb_display and _fb_display.strip().lower() not in ("ko có trong danh sách lệnh", "không có trong danh sách lệnh"):
+                                        self.chat_widget.set_ai_response(_fb_display)
+                                        _finish()
+                                        return
+                                    # Nhờ AI trả lời tự nhiên (không ép tool) thay vì báo lỗi
+                                    try:
+                                        _natural_prompt = (
+                                            "SYSTEM:\n"
+                                            "Bạn là Edubot trong EduPlay Studio - trợ lý thân thiện.\n"
+                                            "Người dùng hỏi 1 việc mà KHÔNG cần tool tự động, hoặc tool chưa cover.\n"
+                                            "Hãy TRẢ LỜI TỰ NHIÊN, ẤM ÁP bằng "
+                                            + ("TIẾNG VIỆT" if language == "vi" else "ENGLISH")
+                                            + ":\n"
+                                            "- Nếu là 'hướng dẫn xài app / cách dùng / giới thiệu tính năng': hướng dẫn từng bước CỤ THỂ kèm vị trí nút (Trang chủ → TẠO MỚI, cột trái → Nhập khẩu, trên cùng → Xuất nội bộ (HTML) nút cam, thẻ Insert → nhóm EduPlay → nút HTML Frame, góc trên phải → Cài đặt/Trợ giúp, góc dưới phải → nút 💬, Ctrl+K tìm nhanh, rê chuột sát mép trái mở menu).\n"
+                                            "- Nếu là kiến thức chung (toán/văn/anh...): trả lời ĐÚNG, NGẮN GỌN, có giải thích.\n"
+                                            "- Nếu là việc trong app chưa tự động được: hướng dẫn thủ công từng bước, KHÔNG nói 'chưa hỗ trợ / đang phát triển'.\n"
+                                            "- TUYỆT ĐỐI KHÔNG xuất 'ko có trong danh sách lệnh', không nhắc tool/JSON/model.\n"
+                                            "\nUser request:\n"
+                                            + str(msg or "")
+                                        )
+                                        _run_follow_up_chat(_natural_prompt)
+                                        return
+                                    except Exception:
+                                        pass
                                     if language == "vi":
-                                        self.chat_widget.set_ai_response("Hiện tại phần mềm chưa hỗ trợ công cụ này vì EduPlay - Studio đang trong giai đoạn phát triển. Xin thứ lỗi vì sự bất tiện này, hãy quay lại sớm vì EduPlay - Studio sẽ phát triển liên tục!!!")
+                                        self.chat_widget.set_ai_response(
+                                            "Mình hiểu rồi! Để mình hướng dẫn bạn nhé:\n\n"
+                                            "1. 📝 Tạo bài mới: Trang chủ → TẠO MỚI → điền tên + mô tả + chọn kiểu game → Tạo và chỉnh sửa.\n"
+                                            "2. 📁 Mở bài cũ: Trang chủ → CHỈNH SỬA → Duyệt dự án → Mở.\n"
+                                            "3. ✏️ Soạn câu hỏi: cột trái → + Thêm câu hỏi → điền ở giữa → Lưu.\n"
+                                            "4. 👁️ Thử: nút xanh Xem trước trên cùng. 📤 Xuất: nút cam Xuất nội bộ (HTML) để lấy file .html, nút xanh Xuất lên web để lấy link.\n"
+                                            "5. 📎 Nhập từ Word/Excel: cột trái → Nhập khẩu (tím) → Tải mẫu → điền → Nhập.\n"
+                                            "6. ⚙️ Cài đặt / ❓ Trợ giúp: góc trên phải. 💬 Chat: nút tròn tím góc dưới phải. ⌨️ Ctrl+K tìm nhanh.\n\n"
+                                            "Bạn muốn mình làm gì tiếp? Ví dụ: 'Tạo 5 câu trắc nghiệm về phân số lớp 4'."
+                                        )
                                     else:
-                                        self.chat_widget.set_ai_response("This tool is not supported yet because EduPlay Studio is still under development. Sorry for the inconvenience—please check back soon as EduPlay Studio is improving continuously.")
+                                        self.chat_widget.set_ai_response(
+                                            "Got it! Quick guide:\n\n"
+                                            "1. Create: Home → CREATE → name + game type → Create.\n"
+                                            "2. Open: Home → EDIT → Browse → Open.\n"
+                                            "3. Add questions: left → +Add → fill in middle → Save.\n"
+                                            "4. Preview (blue button on top), Export HTML (orange) / Export to web (blue).\n"
+                                            "5. Import Word/Excel: left → Import → Download template.\n\n"
+                                            "Tell me what to do, e.g. 'Create 5 quiz questions about fractions'."
+                                        )
                                     _finish()
                                     return
 
                                 if not matches:
-                                    not_supported_vi = "Hiện tại phần mềm chưa hỗ trợ công cụ này vì EduPlay - Studio đang trong giai đoạn phát triển. Xin thứ lỗi vì sự bất tiện này, hãy quay lại sớm vì EduPlay - Studio sẽ phát triển liên tục!!!"
-                                    not_supported_en = "Our app is still under development and doesn't support all requests yet. Sorry—please check back soon as we're improving it."
+                                    # SỬA 2026-09-19: Edubot phải trả lời được mọi câu hỏi, KHÔNG nói "chưa hỗ trợ".
+                                    # Phân loại: informational (hướng dẫn/Q&A) -> trả lời tự nhiên ngay.
+                                    # Chỉ ép tool khi thực sự cần thao tác (tạo/sửa/xóa/cấu hình...).
+                                    try:
+                                        _ml_info = str(intent.get("ml") or "").lower()
+                                    except Exception:
+                                        _ml_info = ""
+                                    _is_guide_request = any(k in _ml_info for k in (
+                                        "hướng dẫn", "huong dan", "cách dùng", "cach dung", "cách xài", "cach xai",
+                                        "cách sử dụng", "cach su dung", "sử dụng", "su dung", "xài ứng dụng", "xai ung dung",
+                                        "dùng app", "dung app", "giới thiệu", "gioi thieu", "tính năng", "tinh nang",
+                                        "how to use", "how to", "guide", "tutorial", "gids", "mode d'emploi",
+                                        "cómo usar", "cómo se usa", "anleitung", "benutzung",
+                                    )) or any(k in _ml_info for k in ("làm được gì", "lam duoc gi", "giúp gì", "giup gi", "help"))
+                                    _needs_mutation = bool(
+                                        intent.get("wants_questions") or intent.get("wants_edit") or intent.get("wants_delete")
+                                        or intent.get("wants_project_create") or intent.get("wants_open_project")
+                                        or intent.get("wants_image") or intent.get("wants_config")
+                                        or intent.get("wants_duplicate") or intent.get("wants_export") or intent.get("wants_preview")
+                                        or intent.get("wants_import") or intent.get("wants_auto_create") or intent.get("wants_from_image")
+                                        or intent.get("wants_split") or intent.get("wants_translate") or intent.get("wants_summarize")
+                                        or intent.get("wants_theme") or intent.get("wants_language") or intent.get("wants_tags")
+                                        or intent.get("wants_clear")
+                                    )
+                                    _is_info_only = bool(
+                                        (intent.get("wants_help") or intent.get("wants_navigate") or intent.get("wants_settings")
+                                         or intent.get("wants_search_projects") or intent.get("wants_stats") or _is_guide_request)
+                                        and not _needs_mutation
+                                    )
+                                    _display_now = ""
+                                    try:
+                                        _display_now = str(display_text or "").strip()
+                                    except Exception:
+                                        _display_now = ""
+                                    # 1) Câu hỏi informational + đã có nội dung tự nhiên -> trả luôn, không ép tool
+                                    if _is_info_only and _display_now:
+                                        self.chat_widget.set_ai_response(_display_now)
+                                        _finish()
+                                        return
+                                    # 2) Câu hỏi hướng dẫn mà AI trả rỗng / quá ngắn -> dựng hướng dẫn cục bộ 100% đúng
+                                    if _is_guide_request and (not _display_now or len(_display_now) < 80):
+                                        try:
+                                            from eduplay.core.edubot_knowledge import NAVIGATION_MAP as _NAV
+                                        except Exception:
+                                            _NAV = {}
+                                        if language == "vi":
+                                            _local_guide = (
+                                                "Mình hướng dẫn bạn xài EduPlay Studio từ A-Z nhé:\n\n"
+                                                "1. 📝 TẠO BÀI MỚI: Trang chủ → TẠO MỚI → điền tên + mô tả + chọn kiểu (Trắc nghiệm/Triệu phú/Bắt cá/Phiêu lưu) → Tạo và chỉnh sửa.\n"
+                                                "2. 📁 MỞ BÀI CŨ: Trang chủ → CHỈNH SỬA → Duyệt dự án → gõ tìm → Mở. Mỗi thẻ có Sao chép / Xóa / Đổi tên.\n"
+                                                "3. ✏️ SOẠN CÂU HỎI: cột trái → + Thêm câu hỏi → ở giữa chọn kiểu (trắc nghiệm/đúng-sai/điền ___/nối cặp/trả lời ngắn) → điền đáp án → chọn đúng → Lưu. Có nút Nhân bản để copy.\n"
+                                                "4. 👁️ XEM TRƯỚC & CHƠI: nút xanh Xem trước trên cùng để thử, nút Chơi để chơi toàn màn hình.\n"
+                                                "5. 📤 XUẤT: nút cam Xuất nội bộ (HTML) → file .html mở bằng trình duyệt; nút xanh Xuất lên web → copy link chia sẻ; PowerPoint: xuất HTML trước rồi vào PowerPoint → thẻ Insert → nhóm EduPlay → HTML Frame → chọn file.\n"
+                                                "6. 📎 NHẬP TỪ FILE: cột trái → Nhập khẩu (tím) → chọn Word/Excel → Tải mẫu để điền đúng → Nhập.\n"
+                                                "7. ⚙️ CÀI ĐẶT (bánh răng góc trên phải): ngôn ngữ, sáng/tối, tự lưu, cỡ chữ, nhạc nền. ❓ Trợ giúp (dấu ?). 💬 Chat: nút tròn tím góc dưới phải. ⌨️ Ctrl+K tìm nhanh, rê chuột sát mép trái mở menu.\n\n"
+                                                "Bạn muốn mình làm gì tiếp? Ví dụ:\n"
+                                                "- 'Tạo 5 câu trắc nghiệm về phân số lớp 4'\n"
+                                                "- 'Mở dự án Toán lớp 4'\n"
+                                                "- 'Đổi thời gian mỗi câu thành 45 giây'"
+                                            )
+                                        else:
+                                            _local_guide = (
+                                                "Quick guide to EduPlay Studio:\n\n"
+                                                "1. Create: Home → CREATE → name + game type → Create.\n"
+                                                "2. Open: Home → EDIT → Browse → Open.\n"
+                                                "3. Edit: left → +Add → fill in middle → Save.\n"
+                                                "4. Preview (blue on top), Export HTML (orange) / Export to web (blue). PowerPoint: export HTML first, then PowerPoint → Insert → EduPlay → HTML Frame.\n"
+                                                "5. Import Word/Excel: left → Import → Download template.\n"
+                                                "6. Settings (gear top-right), Help (?), Chat (purple 💬 bottom-right), Ctrl+K quick find.\n\n"
+                                                "Try: 'Create 5 quiz questions about fractions'."
+                                            )
+                                        self.chat_widget.set_ai_response(_local_guide)
+                                        _finish()
+                                        return
                                     if intent.get("wants_action") and _looks_like_clarification(cur_text):
                                         try:
                                             if debug_ai:
@@ -6261,7 +8589,8 @@ QLabel {
                                         self.chat_widget.set_ai_response(str(cur_text or "").strip())
                                         _finish()
                                         return
-                                    if intent.get("wants_action") and int(state.get("tool_retry", 0) or 0) < 3:
+                                    # 3) Chỉ ép tool khi cần mutation, tối đa 2 lần (trước là 3)
+                                    if _needs_mutation and int(state.get("tool_retry", 0) or 0) < 2:
                                         state["tool_retry"] = int(state.get("tool_retry", 0) or 0) + 1
                                         try:
                                             if debug_ai:
@@ -6290,15 +8619,24 @@ QLabel {
                                             knowledge_line = ""
                                         prompt_force = (
                                             "SYSTEM:\n"
-                                            "Tôi đang chạy trong EduPlay Studio.\n"
-                                            "Tôi chỉ được phép xuất các lệnh tool sau (đúng y hệt tên lệnh):\n"
-                                            "- CREATE_PROJECT, OPEN_PROJECT, ADD_QUESTION, UPDATE_QUESTION, DELETE_QUESTION,\n"
-                                            "- SET_QUESTION_IMAGE, SET_QUESTION_IMAGE_URL, SEARCH_IMAGE,\n"
-                                            "- UPDATE_GAME_CONFIG, READ_PROJECT_DETAILS, WEB_SEARCH, WEB_FETCH.\n"
+                                            "Bạn đang chạy trong EduPlay Studio (50+ công việc).\n"
+                                            "Bạn có thể xuất các lệnh tool sau (đúng y hệt tên):\n"
+                                            "- CREATE_PROJECT, OPEN_PROJECT, LIST_PROJECTS, SEARCH_PROJECTS, GET_STATS, READ_PROJECT_DETAILS,\n"
+                                            "- ADD_QUESTION, UPDATE_QUESTION, DELETE_QUESTION, DUPLICATE_QUESTION, LIST_QUESTIONS, COUNT_QUESTIONS,\n"
+                                            "- TRANSLATE_QUESTION, SUMMARIZE_PROJECT, IMPORT_QUESTIONS, REMOVE_DUPLICATES, REORDER_QUESTIONS,\n"
+                                            "- SET_QUESTION_IMAGE, SET_QUESTION_IMAGE_URL, SEARCH_IMAGE, GENERATE_FROM_IMAGE,\n"
+                                            "- UPDATE_GAME_CONFIG, SET_QUESTION_TIME, SET_POINTS, ENABLE_SHUFFLE, DISABLE_SHUFFLE, TOGGLE_EXPLANATION, SET_EXAM_MODE, SET_MUSIC,\n"
+                                            "- DUPLICATE_PROJECT, DELETE_PROJECT, UPDATE_PROJECT, SAVE_PROJECT, BACKUP_PROJECT,\n"
+                                            "- NAVIGATE, GO_HOME, OPEN_BROWSER, OPEN_EDITOR, OPEN_SETTINGS, OPEN_HELP, OPEN_COMMAND_PALETTE,\n"
+                                            "- PREVIEW, EXPORT_HTML, EXPORT_WEB, TAKE_SCREENSHOT, APP_INFO, CALCULATE,\n"
+                                            "- WEB_SEARCH, WEB_FETCH, SET_THEME, SET_LANGUAGE, SET_FONT, UPDATE_TAGS, ADD_TAG, REMOVE_TAG,\n"
+                                            "- CLEAR_CHAT, AUTO_CREATE_FULL_PROJECT, SPLIT_DOCUMENT.\n"
                                             "\n"
-                                            "QUY TẮC BẮT BUỘC:\n"
-                                            "- Nếu yêu cầu của người dùng KHÔNG ánh xạ được sang một lệnh trong danh sách trên: chỉ trả về đúng 1 dòng: ko có trong danh sách lệnh\n"
-                                            "- Nếu yêu cầu ánh xạ được: chỉ xuất các dòng tool hợp lệ (mỗi lệnh 1 dòng). Không xuất chữ giải thích.\n"
+                                            "QUY TẮC:\n"
+                                            "- Nếu yêu cầu CẦN thao tác (tạo/mở/sửa/xóa/cấu hình/xuất...): chỉ xuất các dòng tool hợp lệ (mỗi lệnh 1 dòng COMMAND: {json}). Không xuất chữ giải thích.\n"
+                                            "- Nếu yêu cầu là HỎI ĐÁP / HƯỚNG DẪN / KIẾN THỨC CHUNG: hãy TRẢ LỜI TỰ NHIÊN bằng "
+                                            + lang_rule +
+                                            " (không xuất tool, không nói 'ko có trong danh sách lệnh').\n"
                                             "- Không tự ý thêm câu hỏi nếu người dùng không yêu cầu tạo/thêm câu hỏi.\n"
                                             + req_cnt_line +
                                             f"- Nếu tạo câu hỏi: nội dung phải bằng {lang_rule}.\n"
@@ -6317,7 +8655,7 @@ QLabel {
                                         self.chat_widget.set_ai_response(display)
                                         _finish()
                                         return
-                                    if intent.get("wants_action"):
+                                    if _needs_mutation:
                                         if intent.get("wants_questions"):
                                             if language == "vi":
                                                 self.chat_widget.set_ai_response(
@@ -6328,13 +8666,41 @@ QLabel {
                                                     "I need a bit more info to generate the questions correctly: (1) grade, (2) lesson/topic taught, (3) how many questions and which format?"
                                                 )
                                         else:
-                                            self.chat_widget.set_ai_response(not_supported_vi if language == "vi" else not_supported_en)
+                                            # SỬA: không nói "chưa hỗ trợ", mà hỏi lại + gợi ý làm thủ công
+                                            if language == "vi":
+                                                self.chat_widget.set_ai_response(
+                                                    "Mình chưa làm tự động được đúng ý này, nhưng mình hướng dẫn bạn làm thủ công nhé:\n"
+                                                    "• Tạo/mở dự án: Trang chủ → TẠO MỚI / CHỈNH SỬA → Mở.\n"
+                                                    "• Soạn câu: cột trái → + Thêm → điền ở giữa → Lưu.\n"
+                                                    "• Xuất: nút cam HTML / nút xanh Web trên cùng.\n"
+                                                    "Bạn nói rõ hơn giúp mình (ví dụ tên dự án / câu số mấy) để mình làm luôn nhé!"
+                                                )
+                                            else:
+                                                self.chat_widget.set_ai_response(
+                                                    "I couldn't auto-do that yet, but here's how to do it manually:\n"
+                                                    "• Home → CREATE / EDIT → Open.\n"
+                                                    "• Left → +Add → fill in middle → Save.\n"
+                                                    "• Top: orange HTML / blue Web export.\n"
+                                                    "Tell me the exact project name / question number and I'll do it!"
+                                                )
                                         _finish()
                                         return
+                                    # Không phải mutation mà cũng không có display -> nhờ AI trả lời tự nhiên
+                                    try:
+                                        _fallback_chat = (
+                                            "SYSTEM: Bạn là Edubot thân thiện. Hãy trả lời tự nhiên bằng "
+                                            + ("TIẾNG VIỆT" if language == "vi" else "ENGLISH")
+                                            + ", ngắn gọn, đúng, ấm áp. Không nhắc tool/JSON.\n\nUser request:\n"
+                                            + str(msg or "")
+                                        )
+                                        _run_follow_up_chat(_fallback_chat)
+                                        return
+                                    except Exception:
+                                        pass
                                     if language == 'vi':
-                                        self.chat_widget.set_ai_response("AI không trả lời (kết quả rỗng). Bạn thử lại hoặc kiểm tra model.")
+                                        self.chat_widget.set_ai_response("Mình vẫn ở đây! Bạn hỏi lại rõ hơn 1 chút nhé (ví dụ: 'hướng dẫn tạo dự án' / 'tạo 5 câu về phân số').")
                                     else:
-                                        self.chat_widget.set_ai_response("AI returned an empty response. Please retry or check your model.")
+                                        self.chat_widget.set_ai_response("I'm here! Please ask again a bit more clearly (e.g. 'how to create a project' / 'create 5 questions').")
                                     _finish()
                                     return
 
@@ -6423,12 +8789,12 @@ QLabel {
                                             }
                                             _raw_del = str(getattr(self, "_last_chat_user_msg", "") or "").lower()
                                             _m_del = _re2.search(
-                                                r"(?:xóa|xoa|delete|remove)\s+(\d+|[a-zàáạảãâầấậẩẫăằắặẳẵđèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹ]+)\s+(?:câu|cau)[^\n\r]*\s+cuối",
+                                                r"(?:xóa|xoa|delete|remove)\s+(\d+|[a-zàáạảãâầấậẩẫăằắặẳẵđèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹ]+)\s+(?:câu|cau)[^\n\r]*\s+(?:cuối|cuoi)",
                                                 _raw_del, flags=_re2.IGNORECASE
                                             )
                                             if not _m_del:
                                                 _m_del = _re2.search(
-                                                    r"(?:xóa|xoa|delete|remove)\s+(\d+|[a-zàáạảãâầấậẩẫăằắặẳẵđèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹ]+)\s+(?:câu|cau)\s+(?:hỏi\s+)?cuối",
+                                                    r"(?:xóa|xoa|delete|remove)\s+(\d+|[a-zàáạảãâầấậẩẫăằắặẳẵđèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹ]+)\s+(?:câu|cau)\s+(?:hỏi\s+)?(?:cuối|cuoi)",
                                                     _raw_del, flags=_re2.IGNORECASE
                                                 )
                                             if _m_del:
@@ -6437,6 +8803,30 @@ QLabel {
                                                 if _del_n >= 1:
                                                     _del_proj = self.project_manager.get_current_project() or {}
                                                     _del_qs = _del_proj.get("questions", []) if isinstance(_del_proj, dict) else []
+                                                    # Fallback to editor screens if manager empty
+                                                    if not isinstance(_del_qs, list) or not _del_qs:
+                                                        try:
+                                                            for _nm_del in ("editor_quiz_screen", "editor_fishing_screen", "editor_screen"):
+                                                                try:
+                                                                    _scr_del = getattr(self, _nm_del, None)
+                                                                except Exception:
+                                                                    _scr_del = None
+                                                                if not _scr_del:
+                                                                    continue
+                                                                try:
+                                                                    _p_del = _scr_del.get_current_project() if hasattr(_scr_del, "get_current_project") else getattr(_scr_del, "current_project", None)
+                                                                except Exception:
+                                                                    _p_del = {}
+                                                                if isinstance(_p_del, dict) and isinstance(_p_del.get("questions"), list) and _p_del.get("questions"):
+                                                                    _del_proj = _p_del
+                                                                    _del_qs = _p_del.get("questions", []) or []
+                                                                    try:
+                                                                        self.project_manager.current_project = _p_del
+                                                                    except Exception:
+                                                                        pass
+                                                                    break
+                                                        except Exception:
+                                                            pass
                                                     if isinstance(_del_qs, list) and _del_qs:
                                                         _take = min(_del_n, len(_del_qs))
                                                         # Take from the end (last N questions)
@@ -6447,6 +8837,41 @@ QLabel {
                                                                     delete_pending_ids.append(_dqid)
                                         except Exception:
                                             delete_pending_ids = []
+                                        # Single "cuối cùng" without number: add last question to pending if still empty
+                                        try:
+                                            if not delete_pending_ids and not pending_ids:
+                                                _raw_single = str(getattr(self, "_last_chat_user_msg", "") or "").lower()
+                                                if any(k in _raw_single for k in ["cuối cùng", "cuoi cung", "cuối", "cuoi"]):
+                                                    _single_proj = self.project_manager.get_current_project() or {}
+                                                    _single_qs = _single_proj.get("questions", []) if isinstance(_single_proj, dict) else []
+                                                    if not isinstance(_single_qs, list) or not _single_qs:
+                                                        for _nm_s in ("editor_quiz_screen", "editor_fishing_screen", "editor_screen"):
+                                                            try:
+                                                                _scr_s = getattr(self, _nm_s, None)
+                                                            except Exception:
+                                                                _scr_s = None
+                                                            if not _scr_s:
+                                                                continue
+                                                            try:
+                                                                _p_s = _scr_s.get_current_project() if hasattr(_scr_s, "get_current_project") else getattr(_scr_s, "current_project", None)
+                                                            except Exception:
+                                                                _p_s = {}
+                                                            if isinstance(_p_s, dict) and isinstance(_p_s.get("questions"), list) and _p_s.get("questions"):
+                                                                _single_qs = _p_s.get("questions", []) or []
+                                                                try:
+                                                                    self.project_manager.current_project = _p_s
+                                                                except Exception:
+                                                                    pass
+                                                                break
+                                                    if isinstance(_single_qs, list) and _single_qs:
+                                                        _last = _single_qs[-1]
+                                                        if isinstance(_last, dict):
+                                                            _lid = str(_last.get("id") or "").strip()
+                                                            if _lid:
+                                                                delete_pending_ids = [_lid]
+                                                                pending_ids = [_lid]
+                                        except Exception:
+                                            pass
                                         self._pending_update_question_ids = list(pending_ids)
                                         self._pending_delete_question_ids = list(delete_pending_ids) if delete_pending_ids else list(pending_ids)
                                     except Exception:
@@ -6486,6 +8911,30 @@ QLabel {
                                 if follow_up_chunks:
                                     merged = "\n\n".join([c for c in follow_up_chunks if c.strip()])
                                     if merged.strip():
+                                        # SỬA 2026-09-19: tool cục bộ (tính toán/thống kê/liệt kê) -> hiện ngay, không cần gọi AI
+                                        # (APP_INFO cố ý KHÔNG ở đây: phải qua AI diễn đạt lại theo ngôn ngữ chat)
+                                        try:
+                                            _local_only = bool(executed_cmds) and all(
+                                                str(x or "").upper().strip() in (
+                                                    "CALCULATE", "SOLVE_MATH", "COUNT_QUESTIONS", "LIST_PROJECTS",
+                                                    "LIST_QUESTIONS", "GET_STATS", "PROJECT_STATS", "STATS",
+                                                    "SAVE_PROJECT",
+                                                ) for x in executed_cmds
+                                            )
+                                        except Exception:
+                                            _local_only = False
+                                        if _local_only:
+                                            try:
+                                                _first = str(merged or "").strip().splitlines()[0].strip()
+                                            except Exception:
+                                                _first = ""
+                                            # CALCULATE follow_up có 2 dòng: dòng 1 đọc được + dòng JSON
+                                            if _first and ("→" in _first or "=" in _first or ":" in _first):
+                                                self.chat_widget.set_ai_response(_first)
+                                            else:
+                                                self.chat_widget.set_ai_response(str(merged or "").strip()[:800])
+                                            _finish()
+                                            return
                                         try:
                                             m2 = str(merged or "")
                                         except Exception:
@@ -6884,7 +9333,7 @@ QLabel {
                                     gtype = "fishing"
                                 if any(x in ml for x in ("triệu phú", "trieu phu", "millionaire")):
                                     gtype = "quiz_millionaire"
-                                new_proj = self.project_manager.create_project(name, description="", game_type=gtype)
+                                new_proj = self.project_manager.create_project(name, description="", game_type=gtype, on_duplicate="suffix")
                                 try:
                                     if self.settings_manager:
                                         self.settings_manager.add_recent_project(new_proj.get("id", ""), new_proj.get("name", ""))
@@ -6996,9 +9445,10 @@ QLabel {
                             + (
                                 "YÊU CẦU XÓA:\n"
                                 "- Chỉ dùng DELETE_QUESTION.\n"
-                                "- Phân tích ý nghĩa: 'xoá N câu cuối' = xoá N câu ở CUỐI danh sách. 'xoá câu thứ N' = xoá đúng câu số N.\n"
+                                "- Phân tích ý nghĩa: 'xoá N câu cuối'/'xoá hết N câu' = xoá N câu ở CUỐI danh sách. 'xoá câu thứ N' = xoá đúng câu số N. 'xoá tất cả'/'xoá hết'/'xoá toàn bộ' = xoá TẤT CẢ câu hiện có (số lượng = _del_total).\n"
                                 "- Mỗi câu cần xóa: 1 dòng DELETE_QUESTION với {\"question_number\": <số thứ tự 1-based>}.\n"
-                                "- Nếu 'xoá N câu cuối': output N dòng DELETE_QUESTION với question_number của N câu cuối (câu cuối nhất xoá trước).\n"
+                                "- Nếu 'xoá N câu cuối'/'xoá hết N câu': output N dòng DELETE_QUESTION với question_number của N câu cuối (câu cuối nhất xoá trước).\n"
+                                "- Nếu 'xoá tất cả'/'xoá hết': output _del_total dòng với question_number 1.._del_total (hoặc _del_total..1 đều được, hệ thống sẽ xóa bằng ID nên không lệch).\n"
                                 "- Output chỉ gồm các dòng DELETE_QUESTION. Không có chữ giải thích.\n"
                                 "- Args là JSON 1 dòng, dùng dấu nháy kép.\n"
                                 + (_del_ctx_lines)
@@ -7373,9 +9823,13 @@ QLabel {
                         desc = desc[1:].lstrip()
                 except Exception:
                     pass
+                if not name:
+                    # Ten rong sau khi lam sach (vd chi con "dự án mới") -> hoi lai thay vi nem loi.
+                    self.chat_widget.add_message("System", _t("ai.tool.create_project_format", "Invalid CREATE_PROJECT format. Use: name|type|desc"), False)
+                    return out
                 if not gtype:
                     gtype = "quiz_classic"
-                new_proj = self.project_manager.create_project(name, description=desc, game_type=gtype)
+                new_proj = self.project_manager.create_project(name, description=desc, game_type=gtype, on_duplicate="suffix")
                 self._open_editor_for_project(new_proj)
                 out["ok"] = True
                 try:
@@ -7445,7 +9899,7 @@ QLabel {
                                             gtype = "fishing"
                                         if any(x in ml for x in ("triệu phú", "trieu phu", "millionaire")):
                                             gtype = "quiz_millionaire"
-                                        new_proj = self.project_manager.create_project(target_name, description="", game_type=gtype)
+                                        new_proj = self.project_manager.create_project(target_name, description="", game_type=gtype, on_duplicate="suffix")
                                         try:
                                             if self.settings_manager:
                                                 self.settings_manager.add_recent_project(new_proj.get("id", ""), new_proj.get("name", ""))
@@ -7479,13 +9933,25 @@ QLabel {
                 try:
                     payload = _parse_json_lenient(args)
                 except Exception:
-                    out["follow_up"] = (
-                        "TOOL_ERROR: ADD_QUESTION args must be valid one-line JSON.\n"
-                        "Please output only tool lines, one per line.\n"
-                        "Example:\n"
-                        "[ADD_QUESTION:{\"type\":\"multiple_choice\",\"question\":\"...\",\"options\":[\"A\",\"B\",\"C\",\"D\"],\"correct_answer\":0,\"explanation\":\"...\"}]"
-                    )
-                    return out
+                    # App vẫn cố cứu: nếu args chứa JSON trần kiểu {"question":...} thì thử bóc
+                    try:
+                        import re as _re_ll
+                        import json as _js_ll
+                        _m_ll = _re_ll.search(r'"question"\s*:', str(args or ""))
+                        if _m_ll:
+                            _m2 = _re_ll.search(r"\{[^{}]*\"question\"[^{}]*\}", str(args or ""))
+                            if _m2:
+                                payload = _js_ll.loads(_m2.group(0))
+                    except Exception:
+                        pass
+                    if not 'payload' in locals() or payload is None:
+                        out["follow_up"] = (
+                            "TOOL_ERROR: ADD_QUESTION args must be valid one-line JSON.\n"
+                            "Please output only tool lines, one per line.\n"
+                            "Example:\n"
+                            "[ADD_QUESTION:{\"type\":\"multiple_choice\",\"question\":\"...\",\"options\":[\"A\",\"B\",\"C\",\"D\"],\"correct_answer\":0,\"explanation\":\"...\"}]"
+                        )
+                        return out
                 items = []
                 if isinstance(payload, list):
                     items = payload
@@ -8271,6 +10737,55 @@ QLabel {
                     except Exception:
                         pass
                 if not qid:
+                    # Fallback cuối: nếu chỉ còn 1 câu hỏi trong dự án, dùng luôn câu đó (tránh 4 lần Thiếu question_id như ảnh)
+                    try:
+                        if isinstance(questions, list) and len(questions) == 1:
+                            _cand1 = questions[0]
+                            if isinstance(_cand1, dict):
+                                _qid1 = str(_cand1.get("id") or "").strip()
+                                if _qid1:
+                                    qid = _qid1
+                    except Exception:
+                        pass
+                if not qid:
+                    # Fallback theo câu đang chọn trong editor (Q1 đang tím)
+                    try:
+                        _sel_qid = ""
+                        for _nm_sel in ("editor_screen", "editor_quiz_screen", "editor_fishing_screen"):
+                            try:
+                                _scr_sel = getattr(self, _nm_sel, None)
+                            except Exception:
+                                _scr_sel = None
+                            if not _scr_sel:
+                                continue
+                            try:
+                                _lp_sel = getattr(_scr_sel, "left_panel", None)
+                                _qlist_sel = getattr(_lp_sel, "questions_list", None) if _lp_sel else None
+                                if _qlist_sel is not None:
+                                    try:
+                                        _row = int(_qlist_sel.currentRow())
+                                    except Exception:
+                                        _row = -1
+                                    if 0 <= _row < len(questions):
+                                        _cand_sel = questions[_row] if 0 <= _row < len(questions) else None
+                                        if isinstance(_cand_sel, dict):
+                                            _sel_qid = str(_cand_sel.get("id") or "").strip()
+                                            if _sel_qid:
+                                                qid = _sel_qid
+                                                break
+                                    # Nếu không có row, thử lấy câu đầu tiên đang hiển thị
+                                    if not _sel_qid and isinstance(questions, list) and questions:
+                                        _first = questions[0]
+                                        if isinstance(_first, dict):
+                                            _sel_qid = str(_first.get("id") or "").strip()
+                                            if _sel_qid:
+                                                qid = _sel_qid
+                                                break
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
+                if not qid:
                     self.chat_widget.add_message("System", _t("ai.tool.missing_question_id", "Missing question_id."), False)
                     try:
                         out["follow_up"] = "TOOL_ERROR: Missing question_id. Expected: UPDATE_QUESTION: {\"question_id\":\"...\",\"patch\":{\"explanation\":\"...\"}}"
@@ -8349,6 +10864,110 @@ QLabel {
 
                 proj = self.project_manager.get_current_project() or {}
                 questions = proj.get("questions", []) if isinstance(proj, dict) else []
+                # Fallback to editor screens if manager project empty / stale (desync fix - aggressive)
+                try:
+                    need_fb2 = False
+                    if (not isinstance(proj, dict) or not str(proj.get("id") or "").strip() or not isinstance(questions, list) or not questions):
+                        need_fb2 = True
+                    else:
+                        for _nm_chk2 in ("editor_quiz_screen", "editor_fishing_screen", "editor_screen"):
+                            try:
+                                _scr_chk2 = getattr(self, _nm_chk2, None)
+                            except Exception:
+                                _scr_chk2 = None
+                            if not _scr_chk2:
+                                continue
+                            try:
+                                _p_chk2 = _scr_chk2.get_current_project() if hasattr(_scr_chk2, "get_current_project") else getattr(_scr_chk2, "current_project", None)
+                            except Exception:
+                                _p_chk2 = None
+                            if isinstance(_p_chk2, dict) and str(_p_chk2.get("id") or "").strip():
+                                try:
+                                    chk_id2 = str(_p_chk2.get("id") or "").strip()
+                                    dir_id2 = str(proj.get("id") or "").strip() if isinstance(proj, dict) else ""
+                                    if chk_id2 and chk_id2 != dir_id2:
+                                        need_fb2 = True
+                                        break
+                                    chk_len2 = len(_p_chk2.get("questions") or []) if isinstance(_p_chk2.get("questions"), list) else -1
+                                    dir_len2 = len(questions) if isinstance(questions, list) else -1
+                                    if chk_len2 != dir_len2:
+                                        need_fb2 = True
+                                        break
+                                    if chk_len2 > 0:
+                                        dir_ids2 = {str(q.get("id") or "").strip() for q in questions if isinstance(q, dict)}
+                                        chk_ids2 = {str(q.get("id") or "").strip() for q in (_p_chk2.get("questions") or []) if isinstance(q, dict)}
+                                        if dir_ids2 != chk_ids2:
+                                            need_fb2 = True
+                                            break
+                                except Exception:
+                                    pass
+                    if need_fb2:
+                        for _nm_fb2 in ("editor_quiz_screen", "editor_fishing_screen", "editor_screen"):
+                            try:
+                                _scr_fb2 = getattr(self, _nm_fb2, None)
+                            except Exception:
+                                _scr_fb2 = None
+                            if not _scr_fb2:
+                                continue
+                            try:
+                                _p_fb2 = _scr_fb2.get_current_project() if hasattr(_scr_fb2, "get_current_project") else getattr(_scr_fb2, "current_project", None)
+                            except Exception:
+                                _p_fb2 = {}
+                            if isinstance(_p_fb2, dict) and str(_p_fb2.get("id") or "").strip() and isinstance(_p_fb2.get("questions"), list) and _p_fb2.get("questions"):
+                                proj = _p_fb2
+                                questions = _p_fb2.get("questions", []) or []
+                                try:
+                                    self.project_manager.current_project = _p_fb2
+                                except Exception:
+                                    pass
+                                break
+                except Exception:
+                    pass
+                # Also try to recover questions from left_panel QListWidget if still empty
+                if (not isinstance(questions, list) or not questions):
+                    try:
+                        for _nm3 in ("editor_quiz_screen", "editor_fishing_screen", "editor_screen"):
+                            try:
+                                _scr3 = getattr(self, _nm3, None)
+                            except Exception:
+                                _scr3 = None
+                            if not _scr3:
+                                continue
+                            try:
+                                _lp = getattr(_scr3, "left_panel", None)
+                                _qlist = getattr(_lp, "questions_list", None) if _lp else None
+                                if _qlist is not None:
+                                    try:
+                                        _tmp_qs = []
+                                        for _ii in range(int(_qlist.count())):
+                                            try:
+                                                _it = _qlist.item(_ii)
+                                            except Exception:
+                                                _it = None
+                                            if not _it:
+                                                continue
+                                            try:
+                                                from PySide6.QtCore import Qt
+                                                _qobj = _it.data(Qt.UserRole)
+                                            except Exception:
+                                                _qobj = None
+                                            if isinstance(_qobj, dict):
+                                                _tmp_qs.append(_qobj)
+                                        if _tmp_qs:
+                                            questions = _tmp_qs
+                                            # also ensure proj is set for later use
+                                            if not isinstance(proj, dict) or not proj:
+                                                try:
+                                                    proj = _p_fb2 if '_p_fb2' in locals() and isinstance(_p_fb2, dict) else {}
+                                                except Exception:
+                                                    proj = {}
+                                            break
+                                    except Exception:
+                                        pass
+                            except Exception:
+                                continue
+                    except Exception:
+                        pass
 
                 qid = ""
                 idx0 = None
@@ -8369,6 +10988,77 @@ QLabel {
                     qid = ""
                     idx0 = None
 
+                if not qid:
+                    try:
+                        pending = getattr(self, "_pending_update_question_ids", []) or []
+                        if isinstance(pending, list) and pending:
+                            qid = str(pending.pop(0) or "").strip()
+                            self._pending_update_question_ids = pending
+                    except Exception:
+                        pass
+                if not qid:
+                    try:
+                        pending2 = getattr(self, "_last_target_question_ids", []) or []
+                        if isinstance(pending2, list) and pending2:
+                            qid = str(pending2.pop(0) or "").strip()
+                            self._last_target_question_ids = pending2
+                    except Exception:
+                        pass
+                if not qid:
+                    try:
+                        raw_user = str(getattr(self, "_last_chat_user_msg", "") or "")
+                        from eduplay.core.ai_tool_payloads import extract_question_numbers
+                        hits = extract_question_numbers(raw_user) if extract_question_numbers else []
+                        try:
+                            proj2 = self.project_manager.get_current_project() or {}
+                            qs2 = proj2.get("questions", []) if isinstance(proj2, dict) else []
+                            qlen2 = len(qs2) if isinstance(qs2, list) else 0
+                            # Fallback to editor screens if manager has no questions
+                            if qlen2 == 0:
+                                for _nm_q2 in ("editor_quiz_screen", "editor_fishing_screen", "editor_screen"):
+                                    try:
+                                        _scr_q2 = getattr(self, _nm_q2, None)
+                                    except Exception:
+                                        _scr_q2 = None
+                                    if not _scr_q2:
+                                        continue
+                                    try:
+                                        _p_q2 = _scr_q2.get_current_project() if hasattr(_scr_q2, "get_current_project") else getattr(_scr_q2, "current_project", None)
+                                    except Exception:
+                                        _p_q2 = {}
+                                    if isinstance(_p_q2, dict) and isinstance(_p_q2.get("questions"), list) and _p_q2.get("questions"):
+                                        qs2 = _p_q2.get("questions", []) or []
+                                        qlen2 = len(qs2) if isinstance(qs2, list) else 0
+                                        try:
+                                            self.project_manager.current_project = _p_q2
+                                        except Exception:
+                                            pass
+                                        break
+                        except Exception:
+                            qlen2 = 0
+                            qs2 = []
+                        if qlen2:
+                            hits = [x for x in hits if 1 <= int(x) <= qlen2]
+                        hits = list(dict.fromkeys(hits))
+                        if hits:
+                            ids = []
+                            for h in hits[:12]:
+                                try:
+                                    idx0b = int(h) - 1
+                                    if 0 <= idx0b < len(qs2):
+                                        cand = qs2[idx0b]
+                                        if isinstance(cand, dict):
+                                            qx = str(cand.get("id") or "").strip()
+                                            if qx:
+                                                ids.append(qx)
+                                except Exception:
+                                    continue
+                            if ids:
+                                qid = str(ids[0] or "").strip()
+                                if len(ids) > 1:
+                                    self._pending_update_question_ids = list(ids[1:])
+                    except Exception:
+                        pass
                 if not qid:
                     try:
                         sraw = str(args or "").strip()
@@ -8500,7 +11190,7 @@ QLabel {
                                 else:
                                     delete_count = int(num_words.get(g, 1))
                             if delete_count <= 1:
-                                m2 = re.search(r"(?:xóa|xoá|delete|remove)\s+(?:\d+|[a-zàáạảãâầấậẩẫăằắặẳẵđèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹ]+)\s+(?:câu|cau)[^\n\r]*\s+cuối", raw0, flags=re.IGNORECASE)
+                                m2 = re.search(r"(?:xóa|xoá|delete|remove)\s+(?:\d+|[a-zàáạảãâầấậẩẫăằắặẳẵđèéẹẻẽêềếệểễìíịỉĩòóọỏõôồốộổỗơờớợởỡùúụủũưừứựửữỳýỵỷỹ]+)\s+(?:câu|cau)[^\n\r]*\s+(?:cuối|cuoi)", raw0, flags=re.IGNORECASE)
                                 if m2 and ("hai" in raw0 or "2" in raw0):
                                     delete_count = 2
                         except Exception:
@@ -8515,6 +11205,30 @@ QLabel {
                         for _ in range(max_del):
                             cur = self.project_manager.get_current_project() or {}
                             qs = cur.get("questions", []) if isinstance(cur, dict) else []
+                            if not isinstance(qs, list) or not qs:
+                                # fallback to screens if manager empty inside loop
+                                try:
+                                    for _nm_cur in ("editor_quiz_screen", "editor_fishing_screen", "editor_screen"):
+                                        try:
+                                            _scr_cur = getattr(self, _nm_cur, None)
+                                        except Exception:
+                                            _scr_cur = None
+                                        if not _scr_cur:
+                                            continue
+                                        try:
+                                            _p_cur = _scr_cur.get_current_project() if hasattr(_scr_cur, "get_current_project") else getattr(_scr_cur, "current_project", None)
+                                        except Exception:
+                                            _p_cur = {}
+                                        if isinstance(_p_cur, dict) and isinstance(_p_cur.get("questions"), list) and _p_cur.get("questions"):
+                                            cur = _p_cur
+                                            qs = _p_cur.get("questions", []) or []
+                                            try:
+                                                self.project_manager.current_project = _p_cur
+                                            except Exception:
+                                                pass
+                                            break
+                                except Exception:
+                                    pass
                             if not isinstance(qs, list) or not qs:
                                 break
                             last = qs[-1]
@@ -8552,6 +11266,62 @@ QLabel {
                         except Exception:
                             qid = ""
                             idx0 = None
+                    # HARD FALLBACK: if still no qid and single "cuối/cuoi" request, force last from any editor screen / QListWidget
+                    if not qid:
+                        try:
+                            _raw_hard = str(getattr(self, "_last_chat_user_msg", "") or "").lower()
+                            if any(k in _raw_hard for kw in ["cuối", "cuoi"]) or True:
+                                for _nm_hard2 in ("editor_quiz_screen", "editor_fishing_screen", "editor_screen"):
+                                    try:
+                                        _scr_h2 = getattr(self, _nm_hard2, None)
+                                    except Exception:
+                                        _scr_h2 = None
+                                    if not _scr_h2:
+                                        continue
+                                    try:
+                                        _p_h2 = _scr_h2.get_current_project() if hasattr(_scr_h2, "get_current_project") else getattr(_scr_h2, "current_project", None)
+                                    except Exception:
+                                        _p_h2 = None
+                                    if isinstance(_p_h2, dict) and isinstance(_p_h2.get("questions"), list) and _p_h2.get("questions"):
+                                        try:
+                                            _last_h2 = _p_h2.get("questions", [])[-1]
+                                            if isinstance(_last_h2, dict):
+                                                _qid_h2 = str(_last_h2.get("id") or "").strip()
+                                                if _qid_h2:
+                                                    qid = _qid_h2
+                                                    questions = _p_h2.get("questions", [])
+                                                    try:
+                                                        self.project_manager.current_project = _p_h2
+                                                    except Exception:
+                                                        pass
+                                                    break
+                                        except Exception:
+                                            pass
+                                    # try QListWidget
+                                    try:
+                                        _lp_h2 = getattr(_scr_h2, "left_panel", None)
+                                        _ql_h2 = getattr(_lp_h2, "questions_list", None) if _lp_h2 else None
+                                        if _ql_h2 is not None and int(_ql_h2.count()) > 0:
+                                            _it_h2 = _ql_h2.item(int(_ql_h2.count())-1)
+                                            if _it_h2:
+                                                from PySide6.QtCore import Qt as _Qt_h2
+                                                _qobj_h2 = _it_h2.data(_Qt_h2.UserRole)
+                                                if isinstance(_qobj_h2, dict):
+                                                    _qid_h3 = str(_qobj_h2.get("id") or "").strip()
+                                                    if _qid_h3:
+                                                        qid = _qid_h3
+                                                        # also sync questions
+                                                        try:
+                                                            _p_tmp = _scr_h2.get_current_project() if hasattr(_scr_h2, "get_current_project") else getattr(_scr_h2, "current_project", None)
+                                                            if isinstance(_p_tmp, dict) and isinstance(_p_tmp.get("questions"), list):
+                                                                questions = _p_tmp.get("questions", [])
+                                                        except Exception:
+                                                            pass
+                                                        break
+                                    except Exception:
+                                        pass
+                        except Exception:
+                            pass
                     if not qid:
                         self.chat_widget.add_message("System", _t("ai.tool.missing_question_id", "Missing question_id."), False)
                         try:
@@ -8624,6 +11394,34 @@ QLabel {
                         except Exception:
                             proj = {}
                         questions = proj.get("questions", []) if isinstance(proj, dict) else []
+                        # Fallback to editor screens if manager stale (manager 5 vs editor 6)
+                        if not isinstance(questions, list) or not (0 <= int(idx0)-1 < len(questions) if isinstance(idx0, int) and idx0>=1 else 0 <= int(idx0) < len(questions)):
+                            try:
+                                for _nm_i2 in ("editor_quiz_screen","editor_fishing_screen","editor_screen"):
+                                    try:
+                                        _scr_i2 = getattr(self, _nm_i2, None)
+                                    except Exception:
+                                        _scr_i2 = None
+                                    if not _scr_i2:
+                                        continue
+                                    try:
+                                        _p_i2 = _scr_i2.get_current_project() if hasattr(_scr_i2, "get_current_project") else getattr(_scr_i2, "current_project", None)
+                                    except Exception:
+                                        _p_i2 = None
+                                    if isinstance(_p_i2, dict) and isinstance(_p_i2.get("questions"), list) and _p_i2.get("questions"):
+                                        _qs_i2 = _p_i2.get("questions", [])
+                                        # check if idx in range for this screen's list
+                                        try:
+                                            _n_chk = int(idx0)
+                                            if _n_chk >=1: _n_chk-=1
+                                            if 0 <= _n_chk < len(_qs_i2):
+                                                proj = _p_i2
+                                                questions = _qs_i2
+                                                try: self.project_manager.current_project = _p_i2
+                                                except: pass
+                                                break
+                                        except: pass
+                            except: pass
                         try:
                             n = int(idx0)
                             if n >= 1:
@@ -8632,11 +11430,240 @@ QLabel {
                                 cand = questions[n]
                                 if isinstance(cand, dict):
                                     qid = str(cand.get("id") or "").strip()
+                                    # FIX: nếu câu hỏi thiếu id (như Q6 trong file không có id), tự tạo id và lưu lại
+                                    if not qid:
+                                        try:
+                                            import uuid as _uuid_fix
+                                            _new_qid = f"q_{_uuid_fix.uuid4().hex[:10]}"
+                                            cand["id"] = _new_qid
+                                            qid = _new_qid
+                                            # đồng bộ lại project
+                                            try:
+                                                if isinstance(questions, list):
+                                                    questions[n] = cand
+                                                if isinstance(proj, dict):
+                                                    proj["questions"] = questions
+                                                    try:
+                                                        self.project_manager.current_project = proj
+                                                    except Exception:
+                                                        pass
+                                                    try:
+                                                        self.project_manager.save_project(proj)
+                                                    except Exception:
+                                                        pass
+                                            except Exception:
+                                                pass
+                                            print(f"[AI-TOOL] auto-assigned missing id for Q{n+1}: {qid}")
+                                        except Exception:
+                                            pass
                         except Exception:
                             pass
                 if not qid:
-                    self.chat_widget.add_message("System", _t("ai.tool.missing_question_id", "Missing question_id."), False)
-                    return out
+                    # HARD FALLBACK for image: try pending / last_target / extract / left_panel / last
+                    try:
+                        # try pending
+                        _pending_img = getattr(self, "_pending_update_question_ids", []) or []
+                        if isinstance(_pending_img, list) and _pending_img:
+                            qid = str(_pending_img[0] or "").strip()
+                            if qid:
+                                try:
+                                    self._pending_update_question_ids = _pending_img[1:]
+                                except: pass
+                    except: pass
+                    if not qid:
+                        try:
+                            _pending2_img = getattr(self, "_last_target_question_ids", []) or []
+                            if isinstance(_pending2_img, list) and _pending2_img:
+                                qid = str(_pending2_img[0] or "").strip()
+                                if qid:
+                                    try: self._last_target_question_ids = _pending2_img[1:]
+                                    except: pass
+                        except: pass
+                    if not qid:
+                        try:
+                            raw_u = str(getattr(self, "_last_chat_user_msg", "") or "")
+                            from eduplay.core.ai_tool_payloads import extract_question_numbers as _ext_q
+                            hits_q = _ext_q(raw_u) if _ext_q else []
+                            if hits_q:
+                                _proj_q = self.project_manager.get_current_project() or {}
+                                _qs_q = _proj_q.get("questions", []) if isinstance(_proj_q, dict) else []
+                                if not _qs_q or len(_qs_q) < max(hits_q):
+                                    for _nm_q in ("editor_quiz_screen","editor_fishing_screen","editor_screen"):
+                                        _scr_q = getattr(self, _nm_q, None)
+                                        if not _scr_q: continue
+                                        _p_q = _scr_q.get_current_project() if hasattr(_scr_q, "get_current_project") else getattr(_scr_q, "current_project", None)
+                                        if isinstance(_p_q, dict) and isinstance(_p_q.get("questions"), list) and len(_p_q.get("questions", [])) >= max(hits_q):
+                                            _qs_q = _p_q.get("questions", [])
+                                            _proj_q = _p_q
+                                            try:
+                                                self.project_manager.current_project = _p_q
+                                            except: pass
+                                            break
+                                for h in hits_q[:1]:
+                                    idx0b = int(h)-1
+                                    if 0 <= idx0b < len(_qs_q):
+                                        cand = _qs_q[idx0b]
+                                        if isinstance(cand, dict):
+                                            qid = str(cand.get("id") or "").strip()
+                                            if not qid:
+                                                try:
+                                                    import uuid as _uuid_h
+                                                    _new_h = f"q_{_uuid_h.uuid4().hex[:10]}"
+                                                    cand["id"] = _new_h
+                                                    qid = _new_h
+                                                    try:
+                                                        _qs_q[idx0b] = cand
+                                                        if isinstance(_proj_q, dict):
+                                                            _proj_q["questions"] = _qs_q
+                                                            try:
+                                                                self.project_manager.current_project = _proj_q
+                                                            except: pass
+                                                            try:
+                                                                self.project_manager.save_project(_proj_q)
+                                                            except: pass
+                                                    except: pass
+                                                    print(f"[AI-TOOL] auto-assigned missing id for Q{int(h)}: {qid}")
+                                                except: pass
+                                            if qid: break
+                        except: pass
+                    if not qid:
+                        try:
+                            # last resort: take last question from any editor - cũng tự tạo id nếu thiếu
+                            for _nm_last in ("editor_quiz_screen","editor_fishing_screen","editor_screen"):
+                                _scr_last = getattr(self, _nm_last, None)
+                                if not _scr_last: continue
+                                _p_last = _scr_last.get_current_project() if hasattr(_scr_last, "get_current_project") else getattr(_scr_last, "current_project", None)
+                                if isinstance(_p_last, dict) and isinstance(_p_last.get("questions"), list) and _p_last.get("questions"):
+                                    _qs_last = _p_last.get("questions", [])
+                                    if _qs_last:
+                                        _last_cand = _qs_last[-1] if isinstance(_qs_last[-1], dict) else None
+                                        if isinstance(_last_cand, dict):
+                                            _qid_last = str(_last_cand.get("id") or "").strip()
+                                            if not _qid_last:
+                                                try:
+                                                    import uuid as _uuid_last
+                                                    _new_last = f"q_{_uuid_last.uuid4().hex[:10]}"
+                                                    _last_cand["id"] = _new_last
+                                                    _qid_last = _new_last
+                                                    try:
+                                                        _qs_last[-1] = _last_cand
+                                                        _p_last["questions"] = _qs_last
+                                                        try:
+                                                            self.project_manager.current_project = _p_last
+                                                        except: pass
+                                                        try:
+                                                            self.project_manager.save_project(_p_last)
+                                                        except: pass
+                                                    except: pass
+                                                    print(f"[AI-TOOL] auto-assigned missing id for last Q: {_qid_last}")
+                                                except: pass
+                                            if _qid_last:
+                                                qid = _qid_last
+                                                try: self.project_manager.current_project = _p_last
+                                                except: pass
+                                                break
+                                _lp_last = getattr(_scr_last, "left_panel", None)
+                                _ql_last = getattr(_lp_last, "questions_list", None) if _lp_last else None
+                                if _ql_last is not None and int(_ql_last.count())>0:
+                                    _it_last = _ql_last.item(int(_ql_last.count())-1)
+                                    if _it_last:
+                                        from PySide6.QtCore import Qt as _Qt_last
+                                        _qobj_last = _it_last.data(_Qt_last.UserRole)
+                                        if isinstance(_qobj_last, dict):
+                                            _qid_ll = str(_qobj_last.get("id") or "").strip()
+                                            if not _qid_ll:
+                                                try:
+                                                    import uuid as _uuid_ll
+                                                    _new_ll = f"q_{_uuid_ll.uuid4().hex[:10]}"
+                                                    _qobj_last["id"] = _new_ll
+                                                    _qid_ll = _new_ll
+                                                    try:
+                                                        _it_last.setData(_Qt_last.UserRole, _qobj_last)
+                                                    except: pass
+                                                except: pass
+                                            if _qid_ll:
+                                                qid = _qid_ll
+                                                break
+                        except: pass
+                    if not qid:
+                        # Thay vì báo lỗi kỹ thuật, thử tự lấy câu đang chọn / câu 6 / câu cuối cùng
+                        try:
+                            _fallback_qid = ""
+                            for _nm_fb in ("editor_screen","editor_quiz_screen","editor_fishing_screen"):
+                                _scr_fb = getattr(self, _nm_fb, None)
+                                if not _scr_fb: continue
+                                try:
+                                    _lp_fb = getattr(_scr_fb, "left_panel", None)
+                                    _ql_fb = getattr(_lp_fb, "questions_list", None) if _lp_fb else None
+                                    if _ql_fb is not None:
+                                        _row = int(_ql_fb.currentRow()) if hasattr(_ql_fb, "currentRow") else -1
+                                        if 0 <= _row < int(_ql_fb.count()):
+                                            _it_fb = _ql_fb.item(_row)
+                                            if _it_fb:
+                                                from PySide6.QtCore import Qt as _Qt_fb
+                                                _q_fb = _it_fb.data(_Qt_fb.UserRole)
+                                                if isinstance(_q_fb, dict):
+                                                    _fallback_qid = str(_q_fb.get("id") or "").strip()
+                                                    if _fallback_qid:
+                                                        qid = _fallback_qid
+                                                        break
+                                except: pass
+                                # nếu không có row, lấy câu theo số 6 hoặc câu cuối
+                                try:
+                                    _p_fb2 = _scr_fb.get_current_project() if hasattr(_scr_fb, "get_current_project") else getattr(_scr_fb, "current_project", None)
+                                    if isinstance(_p_fb2, dict) and isinstance(_p_fb2.get("questions"), list) and _p_fb2.get("questions"):
+                                        _qs_fb2 = _p_fb2.get("questions", [])
+                                        # ưu tiên Q6 nếu có
+                                        if len(_qs_fb2) >= 6:
+                                            _cand6 = _qs_fb2[5]
+                                            if isinstance(_cand6, dict):
+                                                _fallback_qid = str(_cand6.get("id") or "").strip()
+                                                if not _fallback_qid:
+                                                    try:
+                                                        import uuid as _uuid6
+                                                        _new6 = f"q_{_uuid6.uuid4().hex[:10]}"
+                                                        _cand6["id"] = _new6
+                                                        _fallback_qid = _new6
+                                                        _qs_fb2[5] = _cand6
+                                                        _p_fb2["questions"] = _qs_fb2
+                                                        try:
+                                                            self.project_manager.current_project = _p_fb2
+                                                        except: pass
+                                                        try:
+                                                            self.project_manager.save_project(_p_fb2)
+                                                        except: pass
+                                                    except: pass
+                                                if _fallback_qid:
+                                                    qid = _fallback_qid
+                                                    break
+                                        # fallback câu cuối
+                                        if not qid and _qs_fb2:
+                                            _last = _qs_fb2[-1]
+                                            if isinstance(_last, dict):
+                                                _fallback_qid = str(_last.get("id") or "").strip()
+                                                if not _fallback_qid:
+                                                    try:
+                                                        import uuid as _uuidL
+                                                        _newL = f"q_{_uuidL.uuid4().hex[:10]}"
+                                                        _last["id"] = _newL
+                                                        _fallback_qid = _newL
+                                                        _qs_fb2[-1] = _last
+                                                        _p_fb2["questions"] = _qs_fb2
+                                                        try:
+                                                            self.project_manager.current_project = _p_fb2
+                                                        except: pass
+                                                        try:
+                                                            self.project_manager.save_project(_p_fb2)
+                                                        except: pass
+                                                    except: pass
+                                                if _fallback_qid:
+                                                    qid = _fallback_qid
+                                                    break
+                                except: pass
+                        except: pass
+                        if not qid:
+                            self.chat_widget.add_message("System", _t("ai.tool.missing_question_id", "Missing question_id."), False)
+                            return out
 
                 if cmd == "SET_QUESTION_IMAGE":
                     image_path = str((payload or {}).get("image_path") or "").strip()
@@ -8692,36 +11719,214 @@ QLabel {
                         url = str((payload or {}).get("url") or "").strip()
                     if cmd == "SEARCH_IMAGE":
                         query = str((payload or {}).get("query") or "").strip()
+                        # If query is too generic (full "Hình ảnh dưới đây..."), replace with correct answer-based query
+                        try:
+                            import re as _re_q_chk
+                            if query and _re_q_chk.search(r"^\s*Hình ảnh dưới đây", query, flags=_re_q_chk.IGNORECASE):
+                                # treat as generic, force fallback to correct answer
+                                query = ""
+                        except Exception:
+                            pass
+                        if not query:
+                            # Fallback: tự tạo query từ nội dung câu hỏi + đáp án đúng nếu AI không cung cấp
+                            try:
+                                _proj_q = self.project_manager.get_current_project() or {}
+                                _qs_q = _proj_q.get("questions", []) if isinstance(_proj_q, dict) else []
+                                if not _qs_q:
+                                    for _nm_qq in ("editor_quiz_screen","editor_fishing_screen","editor_screen"):
+                                        try:
+                                            _scr_qq = getattr(self, _nm_qq, None)
+                                        except Exception:
+                                            _scr_qq = None
+                                        if not _scr_qq:
+                                            continue
+                                        try:
+                                            _p_qq = _scr_qq.get_current_project() if hasattr(_scr_qq, "get_current_project") else getattr(_scr_qq, "current_project", None)
+                                        except Exception:
+                                            _p_qq = None
+                                        if isinstance(_p_qq, dict) and isinstance(_p_qq.get("questions"), list) and _p_qq.get("questions"):
+                                            _qs_q = _p_qq.get("questions", [])
+                                            _proj_q = _p_qq
+                                            break
+                                for _qq in _qs_q:
+                                    if isinstance(_qq, dict) and str(_qq.get("id") or "").strip() == str(qid or "").strip():
+                                        _qt = str(_qq.get("question") or _qq.get("text") or "").strip()
+                                        _correct = ""
+                                        try:
+                                            _opts = _qq.get("options") if isinstance(_qq.get("options"), list) else None
+                                            _ca = _qq.get("correct_answer")
+                                            if isinstance(_opts, list) and isinstance(_ca, int) and 0 <= _ca < len(_opts):
+                                                _cand2 = _opts[_ca]
+                                                if isinstance(_cand2, dict):
+                                                    _correct = str(_cand2.get("text") or _cand2.get("label") or "").strip()
+                                                else:
+                                                    _correct = str(_cand2 or "").strip()
+                                            # Q6 format: options = [{"text": "...", "correct": true}, ...] không có correct_answer
+                                            if not _correct and isinstance(_opts, list):
+                                                for _o2 in _opts:
+                                                    if isinstance(_o2, dict) and _o2.get("correct"):
+                                                        _correct = str(_o2.get("text") or _o2.get("label") or "").strip()
+                                                        if _correct:
+                                                            break
+                                            if not _correct:
+                                                _ans = _qq.get("answers")
+                                                if isinstance(_ans, list) and _ans:
+                                                    _correct = str(_ans[0] or "").strip()
+                                                elif isinstance(_ans, str) and _ans.strip():
+                                                    _correct = str(_ans).strip()
+                                        except Exception:
+                                            _correct = ""
+                                        import re as _re2
+                                        _is_img = bool(_re2.search(r"^\s*Hình ảnh", _qt, flags=_re2.IGNORECASE))
+                                        if _is_img and _correct:
+                                            _qt_clean = _correct
+                                            if "bạo lực" in _qt.lower() and "bạo lực" not in _correct.lower():
+                                                _qt_clean = _correct + " bạo lực học đường"
+                                            query = _qt_clean[:80].strip()
+                                        else:
+                                            _qt_clean = _re2.sub(r"^\s*Hình ảnh.*?\?\s*", "", _qt, flags=_re2.IGNORECASE).strip()
+                                            _qt_clean = _qt_clean or _qt
+                                            if _correct and len(_correct) > 2:
+                                                _qt_clean = f"{_qt_clean} {_correct}".strip()
+                                            query = _qt_clean[:80].strip()
+                                        break
+                                if not query:
+                                    raw_u = str(getattr(self, "_last_chat_user_msg", "") or "")
+                                    query = raw_u[:60].strip() or "bạo lực học đường minh họa"
+                            except Exception:
+                                query = "bạo lực học đường minh họa"
+                        if not query:
+                            query = "bạo lực học đường minh họa"
                         if not query:
                             self.chat_widget.add_message("System", _t("ai.tool.search_image_format", "SEARCH_IMAGE requires {question_id, query}."), False)
                             return out
                         try:
                             import requests
+                            # FIX: Wikimedia Commons cần tìm trong File namespace (6) mới ra ảnh, và fallback nhiều query
+                            def _strip_diacritics(s: str) -> str:
+                                try:
+                                    import unicodedata
+                                    t = str(s or "")
+                                    t = t.replace("Đ","D").replace("đ","d")
+                                    t = unicodedata.normalize("NFD", t)
+                                    t = "".join(ch for ch in t if unicodedata.category(ch) != "Mn")
+                                    return t
+                                except Exception:
+                                    return str(s or "")
+                            def _build_fallback_queries(q: str) -> list:
+                                qs = []
+                                try:
+                                    q = str(q or "").strip()
+                                    # Ưu tiên English cho bạo lực học đường vì Wikimedia Commons tiếng Việt nghèo nàn
+                                    lower = q.lower() if q else ""
+                                    vi_en_map = {
+                                        "bạo lực thể chất": "school bullying physical",
+                                        "bạo lực mạng": "cyberbullying school",
+                                        "bạo lực tinh thần": "psychological bullying school",
+                                        "bạo lực cảm xúc": "emotional bullying school",
+                                        "bạo lực học đường": "school bullying",
+                                        "bao luc the chat": "school bullying physical",
+                                        "bao luc mang": "cyberbullying school",
+                                    }
+                                    english_first = None
+                                    for vi, en in vi_en_map.items():
+                                        if vi in lower:
+                                            english_first = en
+                                            break
+                                    if english_first:
+                                        qs.append(english_first)
+                                    if q:
+                                        qs.append(q)
+                                    # không dấu
+                                    q_ascii = _strip_diacritics(q)
+                                    if q_ascii and q_ascii.lower() != q.lower() and q_ascii not in qs:
+                                        qs.append(q_ascii)
+                                    # mapping Việt -> Anh còn lại (nếu chưa thêm)
+                                    for vi, en in vi_en_map.items():
+                                        if vi in lower and en not in qs:
+                                            qs.append(en)
+                                            break
+                                    # generic English fallbacks
+                                    for fb in ["school bullying", "bullying school", "school violence", "physical violence"]:
+                                        if fb not in qs:
+                                            qs.append(fb)
+                                except Exception:
+                                    pass
+                                # dedup
+                                seen = set()
+                                out_qs = []
+                                for x in qs:
+                                    if x and x not in seen:
+                                        seen.add(x)
+                                        out_qs.append(x)
+                                return out_qs[:6]
                             api = "https://commons.wikimedia.org/w/api.php"
-                            r = requests.get(
-                                api,
-                                params={
-                                    "action": "query",
-                                    "format": "json",
-                                    "generator": "search",
-                                    "gsrsearch": query,
-                                    "gsrlimit": 1,
-                                    "prop": "imageinfo",
-                                    "iiprop": "url",
-                                    "iiurlwidth": 1024,
-                                },
-                                timeout=15,
-                            )
-                            data = r.json() if (200 <= r.status_code < 300) else {}
-                            pages = (((data or {}).get("query") or {}).get("pages") or {})
-                            first = None
-                            for _, v in (pages.items() if isinstance(pages, dict) else []):
-                                first = v
-                                break
-                            if first:
-                                ii = (first.get("imageinfo") or [])
-                                if isinstance(ii, list) and ii:
-                                    url = str(ii[0].get("thumburl") or ii[0].get("url") or "").strip()
+                            fallback_qs = _build_fallback_queries(query)
+                            for q_try in fallback_qs:
+                                try:
+                                    r = requests.get(
+                                        api,
+                                        params={
+                                            "action": "query",
+                                            "format": "json",
+                                            "generator": "search",
+                                            "gsrsearch": q_try,
+                                            "gsrnamespace": 6,
+                                            "gsrlimit": 1,
+                                            "prop": "imageinfo",
+                                            "iiprop": "url",
+                                            "iiurlwidth": 1024,
+                                        },
+                                        headers={"User-Agent": "EduPlayStudio/1.0 (https://eduplay.local; contact: support@eduplay.local)"},
+                                        timeout=15,
+                                    )
+                                    data = r.json() if (200 <= r.status_code < 300) else {}
+                                    pages = (((data or {}).get("query") or {}).get("pages") or {})
+                                    first = None
+                                    for _, v in (pages.items() if isinstance(pages, dict) else []):
+                                        first = v
+                                        break
+                                    if first:
+                                        ii = (first.get("imageinfo") or [])
+                                        if isinstance(ii, list) and ii:
+                                            url = str(ii[0].get("thumburl") or ii[0].get("url") or "").strip()
+                                            if url:
+                                                if q_try != query:
+                                                    print(f"[AI-TOOL] Wikimedia fallback query '{q_try}' succeeded (orig '{query}') -> {url[:80]}")
+                                                    query = q_try  # update query for log
+                                                break
+                                except Exception:
+                                    continue
+                            # nếu vẫn không có, thử namespace mặc định như cũ (đề phòng)
+                            if not url:
+                                try:
+                                    r = requests.get(
+                                        api,
+                                        params={
+                                            "action": "query",
+                                            "format": "json",
+                                            "generator": "search",
+                                            "gsrsearch": query,
+                                            "gsrlimit": 1,
+                                            "prop": "imageinfo",
+                                            "iiprop": "url",
+                                            "iiurlwidth": 1024,
+                                        },
+                                        headers={"User-Agent": "EduPlayStudio/1.0 (https://eduplay.local; contact: support@eduplay.local)"},
+                                        timeout=15,
+                                    )
+                                    data = r.json() if (200 <= r.status_code < 300) else {}
+                                    pages = (((data or {}).get("query") or {}).get("pages") or {})
+                                    first = None
+                                    for _, v in (pages.items() if isinstance(pages, dict) else []):
+                                        first = v
+                                        break
+                                    if first:
+                                        ii = (first.get("imageinfo") or [])
+                                        if isinstance(ii, list) and ii:
+                                            url = str(ii[0].get("thumburl") or ii[0].get("url") or "").strip()
+                                except Exception:
+                                    url = ""
                         except Exception:
                             url = ""
                     if not url:
@@ -8732,7 +11937,7 @@ QLabel {
                         from pathlib import Path
                         import re
                         import tempfile
-                        resp = requests.get(url, timeout=20)
+                        resp = requests.get(url, headers={"User-Agent": "EduPlayStudio/1.0 (https://eduplay.local; contact: support@eduplay.local)"}, timeout=20)
                         if not (200 <= resp.status_code < 300):
                             raise ValueError(f"HTTP {resp.status_code}")
                         ctype = str(resp.headers.get("content-type") or "").lower()
@@ -9172,6 +12377,1055 @@ QLabel {
                     out["ok"] = True
                 else:
                     self.chat_widget.add_message("System", _t("ai.tool.update_config_failed", "Failed to update config."), False)
+                return out
+
+            # === NEW: Navigation & UI tools ===
+            if cmd == "NAVIGATE":
+                payload = _parse_json_lenient(args) or {}
+                # hỗ trợ nhiều alias
+                target = str(payload.get("screen") or payload.get("target") or payload.get("page") or payload.get("name") or args or "").strip().lower()
+                if not target:
+                    target = "home"
+                # normalize
+                mapping = {
+                    "home": "home", "trang chủ": "home", "trangchu": "home",
+                    "new_project": "new_project", "new": "new_project", "tạo dự án": "new_project", "tao du an": "new_project",
+                    "browser": "browser", "projects": "browser", "dự án": "browser", "du an": "browser",
+                    "player": "player", "preview": "player", "xem trước": "player",
+                    "editor": "browser", "soạn": "browser", "chỉnh sửa": "browser",
+                }
+                screen = mapping.get(target, "home")
+                # alias trực tiếp
+                if target in ("home","new_project","browser","player","editor"):
+                    screen = target
+                try:
+                    self.show_screen(screen)
+                    out["ok"] = True
+                    out["follow_up"] = f"NAVIGATE_OK:{screen}"
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Không thể điều hướng tới {screen}: {e}", False)
+                return out
+
+            if cmd in ("OPEN_SETTINGS", "SHOW_SETTINGS", "SETTINGS"):
+                try:
+                    self.show_settings()
+                    out["ok"] = True
+                    out["follow_up"] = "OPEN_SETTINGS_OK"
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Không thể mở Cài đặt: {e}", False)
+                return out
+
+            if cmd in ("OPEN_HELP", "SHOW_HELP", "HELP"):
+                try:
+                    self.show_help()
+                    out["ok"] = True
+                    out["follow_up"] = "OPEN_HELP_OK"
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Không thể mở Trợ giúp: {e}", False)
+                return out
+
+            if cmd in ("OPEN_COMMAND_PALETTE", "SHOW_COMMAND_PALETTE", "COMMAND_PALETTE"):
+                try:
+                    self.show_command_palette()
+                    out["ok"] = True
+                    out["follow_up"] = "OPEN_COMMAND_PALETTE_OK"
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Không thể mở Command Palette: {e}", False)
+                return out
+
+            if cmd == "DUPLICATE_QUESTION":
+                payload = _parse_json_lenient(args) or {}
+                qid = str(payload.get("question_id") or payload.get("questionId") or payload.get("id") or "").strip()
+                if not qid:
+                    # fallback: question_number
+                    try:
+                        qnum = payload.get("question_number") or payload.get("questionNumber") or payload.get("number")
+                        if qnum is not None:
+                            qnum = int(str(qnum).strip())
+                            proj = self.project_manager.get_current_project() or {}
+                            qs = proj.get("questions", []) if isinstance(proj, dict) else []
+                            if 1 <= qnum <= len(qs):
+                                qid = str(qs[qnum-1].get("id") or "").strip()
+                    except Exception:
+                        pass
+                if not qid:
+                    # fallback: currently selected
+                    try:
+                        for _nm in ("editor_quiz_screen","editor_fishing_screen","editor_screen"):
+                            scr = getattr(self, _nm, None)
+                            if not scr: continue
+                            lp = getattr(scr, "left_panel", None)
+                            ql = getattr(lp, "questions_list", None) if lp else None
+                            if ql is not None and ql.currentItem():
+                                from PySide6.QtCore import Qt
+                                qobj = ql.currentItem().data(Qt.UserRole)
+                                if isinstance(qobj, dict):
+                                    qid = str(qobj.get("id") or "").strip()
+                                    if qid: break
+                    except Exception:
+                        pass
+                if not qid:
+                    self.chat_widget.add_message("System", _t("ai.tool.missing_question_id", "Missing question_id for DUPLICATE_QUESTION."), False)
+                    return out
+                new_id = self.project_manager.duplicate_question(qid)
+                if new_id:
+                    cur = self.project_manager.get_current_project()
+                    if cur:
+                        self._open_editor_for_project(cur)
+                    out["ok"] = True
+                    out["follow_up"] = f"DUPLICATE_QUESTION_OK:{new_id}"
+                else:
+                    self.chat_widget.add_message("System", _t("ai.tool.duplicate_question_failed", f"Failed to duplicate question: {qid}"), False)
+                return out
+
+            if cmd == "DUPLICATE_PROJECT":
+                payload = _parse_json_lenient(args) or {}
+                pid = str(payload.get("project_id") or payload.get("projectId") or payload.get("id") or "").strip()
+                if not pid:
+                    # thử theo tên
+                    pname = str(payload.get("project_name") or payload.get("name") or "").strip()
+                    if pname:
+                        try:
+                            for p in self.project_manager.get_all_projects() or []:
+                                if str(p.get("name") or "").strip().lower() == pname.lower():
+                                    pid = str(p.get("id") or "").strip()
+                                    break
+                        except Exception:
+                            pass
+                if not pid:
+                    # fallback current project
+                    try:
+                        cur = self.project_manager.get_current_project() or {}
+                        pid = str(cur.get("id") or "").strip()
+                    except Exception:
+                        pid = ""
+                if not pid:
+                    self.chat_widget.add_message("System", "Thiếu project_id để sao chép.", False)
+                    return out
+                new_proj = self.project_manager.duplicate_project(pid)
+                if new_proj:
+                    # mở luôn project mới
+                    try:
+                        self._open_editor_for_project(new_proj)
+                    except Exception:
+                        pass
+                    out["ok"] = True
+                    out["follow_up"] = json.dumps({"duplicated_project_id": new_proj.get("id"), "name": new_proj.get("name")}, ensure_ascii=False)
+                else:
+                    self.chat_widget.add_message("System", f"Không thể sao chép dự án: {pid}", False)
+                return out
+
+            if cmd == "DELETE_PROJECT":
+                payload = _parse_json_lenient(args) or {}
+                pid = str(payload.get("project_id") or payload.get("projectId") or payload.get("id") or "").strip()
+                if not pid:
+                    pname = str(payload.get("project_name") or payload.get("name") or "").strip()
+                    if pname:
+                        try:
+                            for p in self.project_manager.get_all_projects() or []:
+                                if str(p.get("name") or "").strip().lower() == pname.lower():
+                                    pid = str(p.get("id") or "").strip()
+                                    break
+                        except Exception:
+                            pass
+                if not pid:
+                    self.chat_widget.add_message("System", "Thiếu project_id để xóa.", False)
+                    return out
+                # xác nhận trước khi xóa (AI cũng cần confirm nhưng tự động hỏi UI)
+                try:
+                    from PySide6.QtWidgets import QMessageBox
+                    from eduplay.core.i18n import I18n
+                    try:
+                        lang = self.settings_manager.get_language() or "en"
+                    except Exception:
+                        lang = "en"
+                    title = I18n.t("browser.delete_project_title", lang) if I18n else "Xóa dự án"
+                    msg = I18n.t("browser.delete_project_confirm", lang).format(name=pid) if I18n else f"Xóa dự án '{pid}'?"
+                    from eduplay.ui.widgets.confirm_dialog import ask_confirm
+                    if not ask_confirm(self, title, msg, lang):
+                        out["follow_up"] = "DELETE_PROJECT_CANCELLED"
+                        return out
+                except Exception:
+                    pass
+                if self.project_manager.delete_project(pid):
+                    try:
+                        self.browser_screen.refresh_projects() if hasattr(self.browser_screen, "refresh_projects") else None
+                    except Exception:
+                        pass
+                    try:
+                        self.show_screen("browser")
+                    except Exception:
+                        pass
+                    out["ok"] = True
+                    out["follow_up"] = f"DELETE_PROJECT_OK:{pid}"
+                else:
+                    self.chat_widget.add_message("System", f"Không thể xóa dự án: {pid}", False)
+                return out
+
+            if cmd in ("PREVIEW", "OPEN_PREVIEW", "SHOW_PREVIEW"):
+                payload = _parse_json_lenient(args) or {}
+                mode = str(payload.get("mode") or payload.get("type") or "quick").strip().lower()
+                if mode not in ("quick","full"):
+                    mode = "quick"
+                try:
+                    # thử editor hiện tại
+                    for _nm in ("editor_quiz_screen","editor_fishing_screen","editor_screen"):
+                        scr = getattr(self, _nm, None)
+                        if scr and hasattr(scr, "open_preview_window"):
+                            scr.open_preview_window(preview_mode=mode)
+                            out["ok"] = True
+                            out["follow_up"] = f"PREVIEW_OK:{mode}"
+                            return out
+                    # fallback: mở player screen
+                    self.show_screen("player")
+                    out["ok"] = True
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Không thể xem trước: {e}", False)
+                return out
+
+            if cmd in ("EXPORT_HTML", "EXPORT_INTERNAL", "XUAT_NOI_BO"):
+                payload = _parse_json_lenient(args) or {}
+                try:
+                    for _nm in ("editor_quiz_screen","editor_fishing_screen","editor_screen"):
+                        scr = getattr(self, _nm, None)
+                        if scr and hasattr(scr, "on_export_html"):
+                            scr.on_export_html()
+                            out["ok"] = True
+                            out["follow_up"] = "EXPORT_HTML_OK"
+                            return out
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Không thể xuất HTML: {e}", False)
+                return out
+
+            if cmd in ("EXPORT_WEB", "PUBLISH_WEB", "PUBLISH", "XUAT_LEN_WEB"):
+                try:
+                    for _nm in ("editor_quiz_screen","editor_fishing_screen","editor_screen"):
+                        scr = getattr(self, _nm, None)
+                        if scr and hasattr(scr, "on_export_web"):
+                            scr.on_export_web()
+                            out["ok"] = True
+                            out["follow_up"] = "EXPORT_WEB_OK"
+                            return out
+                    # fallback via main_window
+                    self.handle_publish_web()
+                    out["ok"] = True
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Không thể xuất lên web: {e}", False)
+                return out
+
+            if cmd in ("UPDATE_PROJECT", "RENAME_PROJECT"):
+                payload = _parse_json_lenient(args) or {}
+                new_name = str(payload.get("name") or payload.get("project_name") or payload.get("title") or "").strip()
+                new_desc = str(payload.get("description") or payload.get("desc") or "").strip()
+                if not new_name and not new_desc:
+                    self.chat_widget.add_message("System", "Thiếu tên dự án mới.", False)
+                    return out
+                try:
+                    cur = self.project_manager.get_current_project() or {}
+                    if not cur:
+                        self.chat_widget.add_message("System", "Không có dự án đang mở.", False)
+                        return out
+                    if new_name:
+                        try:
+                            own_id = str(cur.get("id") or "").strip()
+                        except Exception:
+                            own_id = ""
+                        try:
+                            if self.project_manager.is_project_name_taken(new_name, exclude_id=own_id):
+                                try:
+                                    from eduplay.core.i18n import I18n as _I18nRn
+                                    dup_txt = _I18nRn.t("project.duplicate_message", _get_lang(), name=new_name)
+                                    if not dup_txt or dup_txt == "project.duplicate_message":
+                                        raise ValueError("i18n-missing")
+                                except Exception:
+                                    dup_txt = f'Đã có dự án tên "{new_name}" trên máy này. Vui lòng chọn tên khác.' if _get_lang() == "vi" else f'A project named "{new_name}" already exists on this machine. Please choose another name.'
+                                self.chat_widget.add_message("System", dup_txt, False)
+                                return out
+                        except Exception:
+                            pass
+                        try:
+                            self.project_manager.push_undo_state()
+                        except Exception:
+                            pass
+                        cur["name"] = new_name
+                    if payload.get("description") is not None:
+                        try:
+                            self.project_manager.push_undo_state()
+                        except Exception:
+                            pass
+                        cur["description"] = new_desc
+                    if self.project_manager.save_project(cur):
+                        self._open_editor_for_project(cur)
+                        out["ok"] = True
+                        out["follow_up"] = f"UPDATE_PROJECT_OK:{cur.get('id')}"
+                    else:
+                        self.chat_widget.add_message("System", "Không thể cập nhật dự án.", False)
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Lỗi cập nhật dự án: {e}", False)
+                return out
+
+            if cmd == "SET_THEME":
+                payload = _parse_json_lenient(args) or {}
+                theme = str(payload.get("theme") or payload.get("value") or args or "").strip().lower()
+                if theme not in ("dark","light"):
+                    # detect từ args string
+                    low = str(args or "").lower()
+                    if "dark" in low or "tối" in low:
+                        theme = "dark"
+                    elif "light" in low or "sáng" in low:
+                        theme = "light"
+                    else:
+                        theme = "light"
+                try:
+                    self.settings_manager.set("theme", theme)
+                    # apply ngay
+                    try:
+                        self._apply_theme_on_start()
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(self, "chat_widget") and self.chat_widget:
+                            self.chat_widget.apply_theme()
+                    except Exception:
+                        pass
+                    try:
+                        _cp = getattr(self, "_command_palette", None)
+                        if _cp is not None and hasattr(_cp, "apply_theme"):
+                            _cp.apply_theme(theme)
+                    except Exception:
+                        pass
+                    try:
+                        _cd = getattr(self, "_calculator_dialog", None)
+                        if _cd is not None and hasattr(_cd, "apply_theme"):
+                            _cd.apply_theme(theme)
+                    except Exception:
+                        pass
+                    out["ok"] = True
+                    out["follow_up"] = f"SET_THEME_OK:{theme}"
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Không thể đổi theme: {e}", False)
+                return out
+
+            if cmd == "SET_LANGUAGE":
+                payload = _parse_json_lenient(args) or {}
+                lang = str(payload.get("language") or payload.get("lang") or payload.get("value") or args or "").strip().lower()
+                # normalize
+                if lang.startswith("vi"): lang = "vi"
+                elif lang.startswith("en"): lang = "en"
+                elif lang.startswith("fr"): lang = "fr"
+                elif lang.startswith("es"): lang = "es"
+                elif lang.startswith("de"): lang = "de"
+                else:
+                    low = str(args or "").lower()
+                    if "việt" in low or "viet" in low: lang = "vi"
+                    elif "french" in low or "français" in low: lang = "fr"
+                    elif "spanish" in low or "español" in low: lang = "es"
+                    elif "german" in low or "deutsch" in low: lang = "de"
+                    else: lang = "vi"
+                try:
+                    self.settings_manager.set_language(lang)
+                    out["ok"] = True
+                    out["follow_up"] = f"SET_LANGUAGE_OK:{lang}"
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Không thể đổi ngôn ngữ: {e}", False)
+                return out
+
+            if cmd in ("SET_FONT", "UPDATE_FONT"):
+                payload = _parse_json_lenient(args) or {}
+                family = str(payload.get("font_family") or payload.get("family") or payload.get("font") or "").strip()
+                size = payload.get("font_size") or payload.get("size")
+                try:
+                    if family:
+                        self.settings_manager.set("editor_settings.font_family", family)
+                    if size is not None:
+                        try:
+                            size = int(str(size).strip())
+                            if 8 <= size <= 32:
+                                self.settings_manager.set("editor_settings.font_size", size)
+                        except Exception:
+                            pass
+                    out["ok"] = True
+                    out["follow_up"] = f"SET_FONT_OK:{family}:{size}"
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Không thể đổi font: {e}", False)
+                return out
+
+            if cmd in ("UPDATE_TAGS", "ADD_TAG", "REMOVE_TAG"):
+                payload = _parse_json_lenient(args) or {}
+                try:
+                    cur = self.project_manager.get_current_project() or {}
+                    if not cur:
+                        self.chat_widget.add_message("System", "Không có dự án đang mở.", False)
+                        return out
+                    pid = str(cur.get("id") or "").strip()
+                    if not pid:
+                        return out
+                    # lấy tags hiện tại
+                    tags = list(cur.get("tags") or [])
+                    if cmd == "ADD_TAG":
+                        tag = str(payload.get("tag") or payload.get("name") or args or "").strip()
+                        if tag and tag not in tags:
+                            tags.append(tag)
+                    elif cmd == "REMOVE_TAG":
+                        tag = str(payload.get("tag") or payload.get("name") or args or "").strip()
+                        if tag in tags:
+                            tags = [t for t in tags if t != tag]
+                    else: # UPDATE_TAGS
+                        new_tags = payload.get("tags")
+                        if isinstance(new_tags, list):
+                            tags = [str(t).strip() for t in new_tags if str(t).strip()]
+                        elif isinstance(new_tags, str):
+                            tags = [str(x).strip() for x in new_tags.split(",") if str(x).strip()]
+                    self.project_manager.update_project_tags(pid, tags)
+                    out["ok"] = True
+                    out["follow_up"] = f"UPDATE_TAGS_OK:{','.join(tags)}"
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Không thể cập nhật tags: {e}", False)
+                return out
+
+            if cmd in ("SEARCH_PROJECTS", "FILTER_PROJECTS"):
+                payload = _parse_json_lenient(args) or {}
+                query = str(payload.get("query") or payload.get("q") or payload.get("search") or args or "").strip()
+                try:
+                    projects = self.project_manager.get_all_projects() or []
+                    filtered = self.project_manager.filter_projects(projects, search_text=query) if query else projects
+                    # trả về tóm tắt
+                    import json as _js
+                    items = [{"name": p.get("name"), "id": p.get("id"), "game_type": p.get("game_type")} for p in filtered[:10]]
+                    out["ok"] = True
+                    out["follow_up"] = _js.dumps({"query": query, "count": len(filtered), "projects": items}, ensure_ascii=False)
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Tìm kiếm dự án lỗi: {e}", False)
+                return out
+
+            if cmd in ("GET_STATS", "PROJECT_STATS", "STATS"):
+                try:
+                    cur = self.project_manager.get_current_project() or {}
+                    all_projects = self.project_manager.get_all_projects() or []
+                    total_q = len(cur.get("questions", []) or []) if isinstance(cur, dict) else 0
+                    import json as _js
+                    out["ok"] = True
+                    out["follow_up"] = _js.dumps({
+                        "current_project": cur.get("name") if isinstance(cur, dict) else "",
+                        "current_questions": total_q,
+                        "total_projects": len(all_projects),
+                        "has_project": bool(cur)
+                    }, ensure_ascii=False)
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Không lấy được stats: {e}", False)
+                return out
+
+            if cmd in ("CLEAR_CHAT", "CLEAR_MEMORY", "RESET_MEMORY"):
+                try:
+                    if getattr(self, "memory_manager", None):
+                        self.memory_manager.clear()
+                    # xóa chat_widget messages
+                    try:
+                        self.chat_widget.messages = []
+                        # clear UI
+                        if hasattr(self.chat_widget, "chat_layout"):
+                            while self.chat_widget.chat_layout.count():
+                                item = self.chat_widget.chat_layout.takeAt(0)
+                                if item.widget():
+                                    item.widget().deleteLater()
+                            self.chat_widget.chat_layout.addStretch()
+                    except Exception:
+                        pass
+                    out["ok"] = True
+                    out["follow_up"] = "CLEAR_MEMORY_OK"
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Không thể xóa bộ nhớ: {e}", False)
+                return out
+
+            if cmd == "TRANSLATE_QUESTION":
+                payload = _parse_json_lenient(args) or {}
+                qnum = payload.get("question_number") or payload.get("questionNumber") or payload.get("number")
+                target = str(payload.get("target_lang") or payload.get("lang") or "en").strip().lower()
+                if not qnum:
+                    self.chat_widget.add_message("System", "Thiếu question_number để dịch.", False)
+                    return out
+                try:
+                    qnum = int(str(qnum).strip())
+                    proj = self.project_manager.get_current_project() or {}
+                    qs = proj.get("questions", []) if isinstance(proj, dict) else []
+                    if 1 <= qnum <= len(qs):
+                        q = qs[qnum-1]
+                        orig = str(q.get("question") or "").strip()
+                        # gọi AI dịch nhanh
+                        prompt = f"Dịch câu hỏi sau sang {target}: {orig}"
+                        trans = self.ai_service.chat_with_ai(prompt, target) if self.ai_service else orig
+                        # cập nhật nếu có
+                        q["question"] = trans.strip() if trans else orig
+                        self.project_manager.save_project(proj)
+                        self._open_editor_for_project(proj)
+                        out["ok"] = True
+                        out["follow_up"] = f"TRANSLATE_QUESTION_OK:{qnum}:{trans[:80]}"
+                    else:
+                        self.chat_widget.add_message("System", f"Câu hỏi {qnum} không tồn tại.", False)
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Dịch lỗi: {e}", False)
+                return out
+
+            if cmd == "SUMMARIZE_PROJECT":
+                try:
+                    proj = self.project_manager.get_current_project() or {}
+                    if not proj:
+                        self.chat_widget.add_message("System", "Không có dự án để tóm tắt.", False)
+                        return out
+                    qs = proj.get("questions", []) or []
+                    prompt = f"Tóm tắt dự án '{proj.get('name')}' có {len(qs)} câu hỏi. Liệt kê 3 ý chính."
+                    summary = self.ai_service.chat_with_ai(prompt, "vi") if self.ai_service else "Tóm tắt..."
+                    out["ok"] = True
+                    out["follow_up"] = summary[:500]
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Tóm tắt lỗi: {e}", False)
+                return out
+
+            if cmd == "IMPORT_QUESTIONS":
+                payload = _parse_json_lenient(args) or {}
+                path = str(payload.get("path") or payload.get("file") or args or "").strip()
+                if not path:
+                    self.chat_widget.add_message("System", "Thiếu đường dẫn file để nhập.", False)
+                    return out
+                try:
+                    if hasattr(self, "editor_screen") and hasattr(self.editor_screen, "on_import_questions"):
+                        # không thể truyền path trực tiếp, sẽ mở dialog, nhưng AI có thể gợi ý
+                        self.editor_screen.on_import_questions()
+                    out["ok"] = True
+                    out["follow_up"] = f"IMPORT_QUESTIONS_TRIGGERED:{path}"
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Nhập lỗi: {e}", False)
+                return out
+
+            if cmd == "AUTO_CREATE_FULL_PROJECT":
+                payload = _parse_json_lenient(args) or {}
+                topic = str(payload.get("topic") or payload.get("title") or payload.get("name") or args or "").strip() or "Dự án mới"
+                count = 10
+                try:
+                    count = int(str(payload.get("count") or payload.get("num") or 10).strip())
+                    count = max(5, min(count, 20))
+                except Exception:
+                    count = 10
+                with_images = bool(payload.get("with_images", True))
+                do_export = bool(payload.get("export", payload.get("export_html", False)))
+                try:
+                    # 1. Tạo dự án
+                    proj = self.project_manager.create_project(topic, f"Tự động tạo {count} câu về {topic}", "quiz_classic", on_duplicate="suffix")
+                    if not proj:
+                        self.chat_widget.add_message("System", "Không thể tạo dự án tự động.", False)
+                        return out
+                    self._open_editor_for_project(proj)
+                    # 2. Nhờ AI tạo câu hỏi (gọi lại AI với prompt tạo câu)
+                    prompt = f"Tạo {count} câu hỏi trắc nghiệm về {topic}, mỗi câu 4 lựa chọn, có giải thích ngắn"
+                    if with_images:
+                        prompt += ", 3 câu đầu có ảnh minh họa phù hợp"
+                    # Gọi AI trực tiếp (đồng bộ) - dùng ai_service
+                    try:
+                        ai_text = self.ai_service.chat_with_ai(prompt, "vi", app_context={"current_project": proj, "project_data": proj})
+                        # Parse và add câu hỏi từ ai_text (tận dụng logic ADD_QUESTION)
+                        # Giả lập bằng cách gọi _execute_ai_tool cho từng câu nếu AI trả về lệnh
+                        # Ở đây đơn giản: nếu AI trả về text, thử extract và tạo
+                        from eduplay.core.ai_tool_payloads import _parse_json_lenient as _p
+                        # Thử tìm JSON trong ai_text
+                        import re, json
+                        # Tìm các block ADD_QUESTION trong ai_text
+                        for m in re.finditer(r'ADD_QUESTION\s*:\s*(\{.*?\})', ai_text, flags=re.DOTALL):
+                            try:
+                                j = _p(m.group(1))
+                                if isinstance(j, dict):
+                                    self._execute_ai_tool("ADD_QUESTION", json.dumps(j, ensure_ascii=False))
+                            except Exception:
+                                continue
+                    except Exception as e:
+                        print(f"[AUTO_CREATE] AI gen failed {e}")
+                    # 3. Xuất nếu cần
+                    if do_export:
+                        try:
+                            for _nm in ("editor_quiz_screen","editor_fishing_screen","editor_screen"):
+                                scr = getattr(self, _nm, None)
+                                if scr and hasattr(scr, "on_export_html"):
+                                    scr.on_export_html()
+                                    break
+                        except Exception:
+                            pass
+                    out["ok"] = True
+                    out["follow_up"] = f"AUTO_CREATE_FULL_PROJECT_OK:{proj.get('id')}:{count}"
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Tự động tạo lỗi: {e}", False)
+                return out
+
+            if cmd == "GENERATE_FROM_IMAGE":
+                payload = _parse_json_lenient(args) or {}
+                # Lấy ảnh từ pending attachments hoặc path
+                try:
+                    # Nếu có file đính kèm, dùng nó
+                    files = list(getattr(self.chat_widget, "_pending_attachments", []) or [])
+                    if files:
+                        # Gọi AI vision để mô tả ảnh rồi tạo câu hỏi
+                        from pathlib import Path
+                        p = Path(str(files[0]))
+                        if p.exists():
+                            desc = self.ai_service.analyze_image_with_vision(str(p), "Mô tả ảnh này để tạo câu hỏi giáo dục", "vi") if self.ai_service else ""
+                            prompt = f"Dựa vào mô tả ảnh: {desc[:500]}, tạo 3 câu hỏi trắc nghiệm liên quan"
+                            ai_text = self.ai_service.chat_with_ai(prompt, "vi") if self.ai_service else ""
+                            # Thử add
+                            import re, json
+                            from eduplay.core.ai_tool_payloads import _parse_json_lenient as _p2
+                            for m in re.finditer(r'ADD_QUESTION\s*:\s*(\{.*?\})', ai_text, flags=re.DOTALL):
+                                try:
+                                    j = _p2(m.group(1))
+                                    if isinstance(j, dict):
+                                        self._execute_ai_tool("ADD_QUESTION", json.dumps(j, ensure_ascii=False))
+                                except Exception:
+                                    continue
+                            out["ok"] = True
+                            out["follow_up"] = "GENERATE_FROM_IMAGE_OK"
+                            return out
+                    self.chat_widget.add_message("System", "Thiếu ảnh để tạo câu hỏi.", False)
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Tạo từ ảnh lỗi: {e}", False)
+                return out
+
+            if cmd == "SPLIT_DOCUMENT":
+                payload = _parse_json_lenient(args) or {}
+                try:
+                    # Lấy file đính kèm đầu tiên
+                    files = list(getattr(self.chat_widget, "_pending_attachments", []) or [])
+                    if not files:
+                        self.chat_widget.add_message("System", "Thiếu tài liệu để tách.", False)
+                        return out
+                    from pathlib import Path
+                    from eduplay.core.import_service import ImportService
+                    svc = ImportService()
+                    # Thử đọc và tách chương
+                    p = Path(str(files[0]))
+                    if p.exists():
+                        # Dùng logic tách chương đơn giản: tìm dòng Chương/Bài/Unit
+                        text = p.read_text(encoding="utf-8", errors="ignore") if p.suffix.lower() in [".txt"] else ""
+                        if not text and p.suffix.lower() == ".pdf":
+                            try:
+                                import fitz
+                                doc = fitz.open(str(p))
+                                text = "\n".join([doc.load_page(i).get_text("text") for i in range(min(5, doc.page_count))])
+                            except Exception:
+                                text = ""
+                        import re
+                        # Tách theo Chương/Bài
+                        parts = re.split(r'(?=^(?:Chương|Bài|Unit|Chapter)\s+\d+)', text, flags=re.MULTILINE | re.IGNORECASE)
+                        parts = [pt.strip() for pt in parts if pt.strip()]
+                        out["ok"] = True
+                        out["follow_up"] = f"SPLIT_DOCUMENT_OK: {len(parts)} phần"
+                        # Lưu vào memory để AI dùng
+                        try:
+                            if getattr(self, "memory_manager", None):
+                                self.memory_manager.add_ai_message(f"Đã tách tài liệu thành {len(parts)} chương")
+                        except Exception:
+                            pass
+                        return out
+                    self.chat_widget.add_message("System", "Không đọc được tài liệu.", False)
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Tách tài liệu lỗi: {e}", False)
+                return out
+
+            # === SỬA 2026-09-19: 20 tools mới để đạt 50+ công việc ===
+            if cmd == "SAVE_PROJECT":
+                try:
+                    proj = self.project_manager.get_current_project() or {}
+                    # sync từ editor nếu manager trống
+                    if not proj:
+                        for _nm in ("editor_quiz_screen", "editor_fishing_screen", "editor_screen"):
+                            try:
+                                _scr = getattr(self, _nm, None)
+                                if not _scr:
+                                    continue
+                                _p = _scr.get_current_project() if hasattr(_scr, "get_current_project") else getattr(_scr, "current_project", None)
+                                if isinstance(_p, dict) and str(_p.get("id") or "").strip():
+                                    proj = _p
+                                    try:
+                                        self.project_manager.current_project = _p
+                                    except Exception:
+                                        pass
+                                    break
+                            except Exception:
+                                continue
+                    if proj and self.project_manager.save_project(proj):
+                        out["ok"] = True
+                        out["follow_up"] = f"SAVE_PROJECT_OK:{proj.get('name','')}"
+                    else:
+                        self.chat_widget.add_message("System", "Không có dự án để lưu." if _get_lang() == "vi" else "No project to save.", False)
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Lưu lỗi: {e}", False)
+                return out
+
+            if cmd == "LIST_PROJECTS":
+                try:
+                    import json as _js
+                    projects = self.project_manager.get_all_projects() or []
+                    items = [{"name": (p or {}).get("name"), "game_type": (p or {}).get("game_type")} for p in projects[:20] if isinstance(p, dict)]
+                    out["ok"] = True
+                    out["follow_up"] = _js.dumps({"total": len(projects), "projects": items}, ensure_ascii=False)
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Lỗi liệt kê: {e}", False)
+                return out
+
+            if cmd == "LIST_QUESTIONS":
+                try:
+                    import json as _js
+                    proj = self.project_manager.get_current_project() or {}
+                    qs = proj.get("questions", []) if isinstance(proj, dict) else []
+                    items = []
+                    if isinstance(qs, list):
+                        for i, q in enumerate(qs[:20]):
+                            if isinstance(q, dict):
+                                items.append({"n": i + 1, "q": str(q.get("question") or "")[:80], "type": str(q.get("type") or "")})
+                    out["ok"] = True
+                    out["follow_up"] = _js.dumps({"project": proj.get("name") if isinstance(proj, dict) else "", "total": len(qs) if isinstance(qs, list) else 0, "questions": items}, ensure_ascii=False)
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Lỗi: {e}", False)
+                return out
+
+            if cmd == "COUNT_QUESTIONS":
+                try:
+                    import json as _js
+                    proj = self.project_manager.get_current_project() or {}
+                    qs = proj.get("questions", []) if isinstance(proj, dict) else []
+                    n = len(qs) if isinstance(qs, list) else 0
+                    out["ok"] = True
+                    out["follow_up"] = _js.dumps({"project": proj.get("name") if isinstance(proj, dict) else "", "count": n}, ensure_ascii=False)
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Lỗi đếm: {e}", False)
+                return out
+
+            if cmd == "SET_QUESTION_TIME":
+                try:
+                    payload = _parse_json_lenient(args) or {}
+                    import re as _re
+                    secs = payload.get("seconds") or payload.get("time") or payload.get("question_time") or payload.get("value")
+                    if secs is None:
+                        m = _re.search(r"(\d{1,3})", str(args or ""))
+                        secs = int(m.group(1)) if m else None
+                    if secs is None:
+                        raise ValueError("Thiếu số giây (5-300)")
+                    secs = max(5, min(300, int(str(secs).strip())))
+                    if self.project_manager.update_game_config({"question_time": secs}):
+                        cur = self.project_manager.get_current_project()
+                        if cur:
+                            self._open_editor_for_project(cur)
+                        out["ok"] = True
+                        out["follow_up"] = f"SET_QUESTION_TIME_OK:{secs}"
+                    else:
+                        self.chat_widget.add_message("System", "Không đổi được thời gian.", False)
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Lỗi thời gian: {e}", False)
+                return out
+
+            if cmd in ("SET_POINTS", "SET_SCORE"):
+                try:
+                    payload = _parse_json_lenient(args) or {}
+                    import re as _re2
+                    pts = payload.get("points") or payload.get("score") or payload.get("value") or payload.get("points_per_question")
+                    if pts is None:
+                        m = _re2.search(r"(\d{1,4})", str(args or ""))
+                        pts = int(m.group(1)) if m else None
+                    if pts is None:
+                        raise ValueError("Thiếu số điểm")
+                    pts = max(1, min(1000, int(str(pts).strip())))
+                    if self.project_manager.update_game_config({"points_per_question": pts, "score_per_question": pts}):
+                        cur = self.project_manager.get_current_project()
+                        if cur:
+                            self._open_editor_for_project(cur)
+                        out["ok"] = True
+                        out["follow_up"] = f"SET_POINTS_OK:{pts}"
+                    else:
+                        self.chat_widget.add_message("System", "Không đổi được điểm.", False)
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Lỗi điểm: {e}", False)
+                return out
+
+            if cmd in ("ENABLE_SHUFFLE", "DISABLE_SHUFFLE"):
+                try:
+                    val = True if cmd == "ENABLE_SHUFFLE" else False
+                    # detect từ args nếu có on/off
+                    low = str(args or "").lower()
+                    if "off" in low or "tắt" in low or "tat" in low or "false" in low:
+                        val = False
+                    if "on" in low or "bật" in low or "bat" in low or "true" in low:
+                        val = True
+                    if self.project_manager.update_game_config({"randomize_questions": val, "shuffle": val}):
+                        cur = self.project_manager.get_current_project()
+                        if cur:
+                            self._open_editor_for_project(cur)
+                        out["ok"] = True
+                        out["follow_up"] = f"{cmd}_OK:{val}"
+                    else:
+                        self.chat_widget.add_message("System", "Không đổi được trộn câu.", False)
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Lỗi trộn: {e}", False)
+                return out
+
+            if cmd == "TOGGLE_EXPLANATION":
+                try:
+                    low = str(args or "").lower()
+                    val = True
+                    if "off" in low or "tắt" in low or "tat" in low or "ẩn" in low or "an " in low or "false" in low:
+                        val = False
+                    if "on" in low or "bật" in low or "bat" in low or "hiện" in low or "hien" in low or "true" in low:
+                        val = True
+                    else:
+                        # toggle theo hiện tại
+                        try:
+                            cur0 = self.project_manager.get_current_project() or {}
+                            cfg0 = (cur0 or {}).get("game_config") or {}
+                            cur_val = bool(cfg0.get("show_explanation", True))
+                            # nếu args rỗng thì đảo
+                            if not str(args or "").strip():
+                                val = (not cur_val)
+                        except Exception:
+                            pass
+                    if self.project_manager.update_game_config({"show_explanation": val}):
+                        cur = self.project_manager.get_current_project()
+                        if cur:
+                            self._open_editor_for_project(cur)
+                        out["ok"] = True
+                        out["follow_up"] = f"TOGGLE_EXPLANATION_OK:{val}"
+                    else:
+                        self.chat_widget.add_message("System", "Không đổi được giải thích.", False)
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Lỗi: {e}", False)
+                return out
+
+            if cmd == "SET_EXAM_MODE":
+                try:
+                    payload = _parse_json_lenient(args) or {}
+                    low = str(args or "").lower()
+                    mode = str(payload.get("mode") or payload.get("value") or "").strip().lower() or low
+                    # 1 lần / cho làm lại
+                    retry_allowed = True
+                    if any(k in mode for k in ["1 lần", "1 lan", "once", "no retry", "exam", "thi"]):
+                        retry_allowed = False
+                    if any(k in mode for k in ["làm lại", "lam lai", "retry", "practice", "luyện"]):
+                        retry_allowed = True
+                    if self.project_manager.update_game_config({"allow_retry": retry_allowed, "exam_mode": (not retry_allowed)}):
+                        cur = self.project_manager.get_current_project()
+                        if cur:
+                            self._open_editor_for_project(cur)
+                        out["ok"] = True
+                        out["follow_up"] = f"SET_EXAM_MODE_OK:retry={retry_allowed}"
+                    else:
+                        self.chat_widget.add_message("System", "Không đổi được chế độ thi.", False)
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Lỗi: {e}", False)
+                return out
+
+            if cmd == "SET_MUSIC":
+                try:
+                    payload = _parse_json_lenient(args) or {}
+                    path = str(payload.get("path") or payload.get("file") or payload.get("music") or args or "").strip()
+                    cfg = {"background_music": path} if path else {"background_music": ""}
+                    # tắt nếu rỗng/off
+                    if (not path) or path.lower() in ("off", "none", "tắt", "tat"):
+                        cfg = {"background_music": "", "music_enabled": False}
+                    else:
+                        cfg["music_enabled"] = True
+                    if self.project_manager.update_game_config(cfg):
+                        cur = self.project_manager.get_current_project()
+                        if cur:
+                            self._open_editor_for_project(cur)
+                        out["ok"] = True
+                        out["follow_up"] = f"SET_MUSIC_OK:{path[:60]}"
+                    else:
+                        self.chat_widget.add_message("System", "Không đổi được nhạc.", False)
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Lỗi nhạc: {e}", False)
+                return out
+
+            if cmd in ("REORDER_QUESTIONS", "SHUFFLE_NOW"):
+                try:
+                    import random
+                    proj = self.project_manager.get_current_project() or {}
+                    qs = list(proj.get("questions", []) or []) if isinstance(proj, dict) else []
+                    if not qs:
+                        self.chat_widget.add_message("System", "Không có câu hỏi để sắp xếp.", False)
+                        return out
+                    random.shuffle(qs)
+                    proj["questions"] = qs
+                    if self.project_manager.save_project(proj):
+                        self._open_editor_for_project(proj)
+                        out["ok"] = True
+                        out["follow_up"] = f"REORDER_QUESTIONS_OK:{len(qs)}"
+                    else:
+                        self.chat_widget.add_message("System", "Không sắp xếp được.", False)
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Lỗi sắp xếp: {e}", False)
+                return out
+
+            if cmd in ("REMOVE_DUPLICATES", "CLEAN_DUPLICATES"):
+                try:
+                    proj = self.project_manager.get_current_project() or {}
+                    qs = proj.get("questions", []) if isinstance(proj, dict) else []
+                    if not isinstance(qs, list) or not qs:
+                        self.chat_widget.add_message("System", "Không có câu hỏi.", False)
+                        return out
+                    seen = set()
+                    kept = []
+                    removed = 0
+                    for q in qs:
+                        try:
+                            key = str((q or {}).get("question") or "").strip().lower()
+                        except Exception:
+                            key = ""
+                        if key and key in seen:
+                            removed += 1
+                            continue
+                        if key:
+                            seen.add(key)
+                        kept.append(q)
+                    if removed:
+                        proj["questions"] = kept
+                        self.project_manager.save_project(proj)
+                        self._open_editor_for_project(proj)
+                    out["ok"] = True
+                    out["follow_up"] = f"REMOVE_DUPLICATES_OK:removed={removed},kept={len(kept)}"
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Lỗi lọc trùng: {e}", False)
+                return out
+
+            if cmd in ("TAKE_SCREENSHOT", "SCREENSHOT"):
+                try:
+                    # dùng overlay có sẵn nếu có, else thông báo vị trí nút
+                    done = False
+                    try:
+                        if hasattr(self, "take_screenshot"):
+                            self.take_screenshot()
+                            done = True
+                    except Exception:
+                        pass
+                    if not done:
+                        try:
+                            from eduplay.ui.screenshot_overlay import show_screenshot_overlay
+                            show_screenshot_overlay(self)
+                            done = True
+                        except Exception:
+                            pass
+                    out["ok"] = bool(done)
+                    out["follow_up"] = "TAKE_SCREENSHOT_OK" if done else "TAKE_SCREENSHOT_MANUAL:Trang chủ → menu trái → Chụp màn hình"
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Chụp lỗi: {e}", False)
+                return out
+
+            if cmd in ("APP_INFO", "ABOUT_APP"):
+                try:
+                    import json as _js
+                    info = {
+                        "app": "EduPlay Studio",
+                        "developers": "Nguyễn Thanh Tân & Bùi Ngô Anh Thư",
+                        "dev": "Nguyễn Thanh Tân & Bùi Ngô Anh Thư",
+                        "support_email": "support@eduplay-studio.io.vn",
+                        "website": "https://eduplay-studio.io.vn",
+                        "offline": True,
+                        "edubot_needs_internet": True,
+                    }
+                    try:
+                        from eduplay.core.settings_manager import SettingsManager as _SM
+                        info["language"] = str(_SM().get("language", "vi") or "vi")
+                    except Exception:
+                        pass
+                    out["ok"] = True
+                    out["follow_up"] = _js.dumps(info, ensure_ascii=False)
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Lỗi: {e}", False)
+                return out
+
+            if cmd in ("CALCULATE", "SOLVE_MATH"):
+                try:
+                    import json as _js
+                    expr_raw = ""
+                    try:
+                        _p = _parse_json_lenient(args) or {}
+                        if isinstance(_p, dict):
+                            expr_raw = str(_p.get("expression") or _p.get("expr") or _p.get("q") or _p.get("text") or args or "")
+                        else:
+                            expr_raw = str(args or "")
+                    except Exception:
+                        expr_raw = str(args or "")
+                    if not str(expr_raw or "").strip():
+                        # fallback: lấy từ tin nhắn user gần nhất
+                        try:
+                            from eduplay.core.ai_tool_payloads import extract_calc_expression as _ext2
+                            expr_raw = str(_ext2(str(getattr(self, "_last_chat_user_msg", "") or "")) or "")
+                        except Exception:
+                            expr_raw = ""
+                    try:
+                        from eduplay.core.ai_tool_payloads import safe_calculate as _safe_calc2
+                        _ok2, _clean2, _res2 = _safe_calc2(expr_raw)
+                    except Exception as _e2:
+                        _ok2, _clean2, _res2 = (False, str(expr_raw or ""), str(_e2))
+                    if _ok2:
+                        out["ok"] = True
+                        # follow_up vừa JSON (cho AI) vừa câu tiếng Việt đọc được (cho hiển thị offline)
+                        out["follow_up"] = f"tính {str(expr_raw or _clean2).strip()} → kết quả: {_res2}\n" + _js.dumps({"expression": _clean2, "result": _res2}, ensure_ascii=False)
+                    else:
+                        self.chat_widget.add_message("System", f"Mình chưa tính được '{str(expr_raw)[:60]}': {_res2}. Ví dụ: 'tính 12x8:4'.", False)
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Tính lỗi: {e}", False)
+                return out
+
+            if cmd == "GO_HOME":
+                try:
+                    self.show_screen("home")
+                    out["ok"] = True
+                    out["follow_up"] = "GO_HOME_OK"
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Không về được Trang chủ: {e}", False)
+                return out
+
+            if cmd == "OPEN_BROWSER":
+                try:
+                    self.show_screen("browser")
+                    out["ok"] = True
+                    out["follow_up"] = "OPEN_BROWSER_OK"
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Không mở được Duyệt dự án: {e}", False)
+                return out
+
+            if cmd == "OPEN_EDITOR":
+                try:
+                    proj = self.project_manager.get_current_project() or {}
+                    if proj:
+                        self._open_editor_for_project(proj)
+                    else:
+                        self.show_screen("browser")
+                    out["ok"] = True
+                    out["follow_up"] = "OPEN_EDITOR_OK"
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Không mở được Soạn: {e}", False)
+                return out
+
+            if cmd == "BACKUP_PROJECT":
+                try:
+                    import json as _js
+                    from pathlib import Path as _Path
+                    proj = self.project_manager.get_current_project() or {}
+                    if not proj:
+                        self.chat_widget.add_message("System", "Không có dự án để sao lưu.", False)
+                        return out
+                    # xuất .eduplay = json của project
+                    try:
+                        base_dir = _Path(str(self.project_manager.projects_dir or ".")) / ".."
+                        base_dir.mkdir(parents=True, exist_ok=True)
+                        fname = f"{str(proj.get('name') or 'project')[:40]}.eduplay.json"
+                        # làm sạch tên file
+                        import re as _re_f
+                        fname = _re_f.sub(r"[^a-zA-Z0-9_\-\. ]+", "_", fname)
+                        fp = base_dir / fname
+                        fp.write_text(_js.dumps(proj, ensure_ascii=False, indent=2), encoding="utf-8")
+                        out["ok"] = True
+                        out["follow_up"] = f"BACKUP_PROJECT_OK:{fp}"
+                    except Exception as e:
+                        out["ok"] = True
+                        out["follow_up"] = _js.dumps({"project_id": proj.get("id"), "name": proj.get("name"), "note": "backup-inline"}, ensure_ascii=False)
+                except Exception as e:
+                    self.chat_widget.add_message("System", f"Sao lưu lỗi: {e}", False)
                 return out
 
             self.chat_widget.add_message("System", _t("ai.tool.unknown", f"Unknown tool: {cmd}"), False)
@@ -9638,7 +13892,7 @@ QLabel {
         except Exception:
             pass
     
-    def show_system_notification(self, title: str, message: str, level: str = "info"):
+    def show_system_notification(self, title: str, message: str, level: str = "info", force: bool = False):
         try:
             from eduplay.core.settings_manager import SettingsManager
             sm = self.settings_manager or SettingsManager()
@@ -9650,7 +13904,7 @@ QLabel {
         if not enabled:
             return
         try:
-            if only_bg:
+            if only_bg and not force:
                 try:
                     if self.isActiveWindow():
                         return
@@ -9661,10 +13915,13 @@ QLabel {
                     self._tray_icon = QSystemTrayIcon(self)
                     self._tray_icon.setIcon(self.windowIcon())
                     self._tray_icon.setToolTip("EduPlay Studio")
-                    self._tray_icon.show()
             tray = getattr(self, "_tray_icon", None)
             if not tray:
                 return
+            try:
+                tray.show()
+            except Exception:
+                pass
             level_l = (level or "").lower()
             if level_l == "warning":
                 icon = QSystemTrayIcon.Warning
@@ -9673,6 +13930,37 @@ QLabel {
             else:
                 icon = QSystemTrayIcon.Information
             tray.showMessage(title or "EduPlay Studio", message or "", icon, 6000)
+            try:
+                from PySide6.QtCore import QTimer as _NotifyTimer
+                _NotifyTimer.singleShot(8000, tray.hide)
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    def _notify_addin_installed(self):
+        """Windows toast shown once right after a fresh add-in install.
+
+        Minimal on purpose: just "Đã cài Add-ins", no title fuss.
+        Respects the master notifications switch; bypasses the
+        background-only gate so the user always sees it.
+        """
+        try:
+            from eduplay.core.i18n import I18n
+            try:
+                lang = self.settings_manager.get_language() if self.settings_manager else "en"
+            except Exception:
+                lang = "en"
+            try:
+                msg = I18n.t("settings.addin.installed_toast", lang)
+            except Exception:
+                msg = ""
+            if not msg or not str(msg).strip() or str(msg).strip() == "settings.addin.installed_toast":
+                msg = "Đã cài Add-ins" if str(lang or "").startswith("vi") else "Add-ins installed."
+        except Exception:
+            msg = "Đã cài Add-ins"
+        try:
+            self.show_system_notification("", msg, "info", force=True)
         except Exception:
             pass
     
@@ -10166,6 +14454,17 @@ QLabel {
             self._show_message(title, msg, "error")
 
     def closeEvent(self, event):
+        # Ket thuc phien AI khi dong app: tom tat session vao profile
+        # dai han TRUOC, roi xoa sach session (MemoryManager.end_session).
+        try:
+            if getattr(self, "memory_manager", None):
+                try:
+                    profile = self.memory_manager.end_session()
+                    print(f"[MEMORY] Session ended, profile: {str(profile or '')[:100]}")
+                except Exception as _e_mem:
+                    print(f"[MEMORY] end_session on close failed {_e_mem}")
+        except Exception:
+            pass
         def _stop_bg_threads():
             try:
                 threads = list(getattr(self, "_background_threads", []) or [])
@@ -10224,6 +14523,291 @@ QLabel {
             _stop_bg_threads()
             event.accept()
 
+    def _confirm_publish(self, preview: dict) -> bool:
+        """Hoi xac nhan truoc khi upload: tom tat bai + link se ghi de/tao moi."""
+        from PySide6.QtWidgets import QDialog, QVBoxLayout, QHBoxLayout, QLabel, QPushButton
+        try:
+            from eduplay.core.i18n import I18n
+            lang = self.settings_manager.get_language() if self.settings_manager else "en"
+        except Exception:
+            I18n = None  # type: ignore
+            lang = "en"
+
+        def _tx(key: str, fallback: str, **kw):
+            try:
+                if I18n:
+                    val = I18n.t(key, lang, **kw)
+                    if val and val != key:
+                        return val
+            except Exception:
+                pass
+            try:
+                return fallback.format(**kw) if kw else fallback
+            except Exception:
+                return fallback
+
+        data = dict(preview or {})
+        name = str(data.get("name") or "EduPlay_Game")
+        try:
+            q_count = int(data.get("question_count") or 0)
+        except Exception:
+            q_count = 0
+        try:
+            size_b = int(data.get("html_bytes") or 0)
+        except Exception:
+            size_b = 0
+        if size_b >= 1024 * 1024:
+            size_txt = f"{size_b / (1024 * 1024):.1f} MB"
+        elif size_b >= 1024:
+            size_txt = f"{size_b / 1024:.0f} KB"
+        else:
+            size_txt = f"{size_b} B"
+        pv = dict(data.get("preview") or {})
+        link_txt = str(pv.get("play_link") or "")
+        if pv.get("conflict"):
+            status_kind = "conflict"
+            status_txt = _tx("publish.status_conflict", "Tên đã có máy khác dùng — tạo link riêng", name=str(pv.get("base_slug") or name))
+        elif pv.get("reused"):
+            status_kind = "overwrite"
+            status_txt = _tx("publish.status_overwrite", "Ghi đè link cũ")
+        elif pv.get("resolved"):
+            status_kind = "new"
+            status_txt = _tx("publish.status_new", "Tạo link mới")
+        else:
+            status_kind = "unknown"
+            status_txt = _tx("publish.status_unknown", "Sẽ quyết định khi tải lên (không kiểm tra được link cũ)")
+            if not link_txt:
+                link_txt = "…"
+
+        try:
+            theme = self.settings_manager.get_theme() if self.settings_manager else "light"
+        except Exception:
+            theme = "light"
+        dark = str(theme).lower() == "dark"
+        dlg_bg = "#0B0E14" if dark else "#FFFFFF"
+        text_color = "#EDEEF3" if dark else "#0F1728"
+        subtle = "#9AA3B2" if dark else "#667085"
+        card_bg = "#131826" if dark else "#F8FAFC"
+        card_border = "#2A2F3A" if dark else "#E4E7EC"
+        header_bg = "#151B2E" if dark else "#F4F1FF"
+        input_bg = "#0B0E14" if dark else "#FFFFFF"
+        input_border = "#2A2F3A" if dark else "#D0D5DD"
+        try:
+            brand = self.settings_manager.get("brand_color", "#10B981") if self.settings_manager else "#10B981"
+        except Exception:
+            brand = "#10B981"
+        try:
+            brand_hover = brand
+            brand_pressed = brand
+            _bc = (brand or "").lstrip("#")
+            if len(_bc) == 6:
+                _br = max(0, int(_bc[0:2], 16) - 18)
+                _bg = max(0, int(_bc[2:4], 16) - 18)
+                _bb = max(0, int(_bc[4:6], 16) - 18)
+                brand_hover = f"#{_br:02X}{_bg:02X}{_bb:02X}"
+                _pr = max(0, int(_bc[0:2], 16) - 36)
+                _pg = max(0, int(_bc[2:4], 16) - 36)
+                _pb = max(0, int(_bc[4:6], 16) - 36)
+                brand_pressed = f"#{_pr:02X}{_pg:02X}{_pb:02X}"
+        except Exception:
+            brand_hover = brand
+            brand_pressed = brand
+        pill_map = {
+            "overwrite": ("#12B76A", "#FFFFFF") if dark else ("#D1FADF", "#027A48"),
+            "new": ("#3B82F6", "#FFFFFF") if dark else ("#DBEAFE", "#1D4ED8"),
+            "conflict": ("#F79009", "#FFFFFF") if dark else ("#FEF0C7", "#B54708"),
+            "unknown": ("#475467", "#FFFFFF") if dark else ("#E4E7EC", "#344054"),
+        }
+        pill_bg, pill_fg = pill_map.get(status_kind, pill_map["unknown"])
+
+        dlg = QDialog(self)
+        try:
+            dlg.setWindowTitle(_tx("publish.confirm_title", "Xác nhận xuất bản"))
+            dlg.setModal(True)
+            dlg.setMinimumWidth(520)
+        except Exception:
+            pass
+        dlg.setStyleSheet(
+            f"""
+            QDialog {{ background-color: {dlg_bg}; color: {text_color}; }}
+            QLabel {{ color: {text_color}; background: transparent; }}
+            QLabel#dlg-title {{ font-size: 17px; font-weight: 800; }}
+            QLabel#dlg-sub {{ color: {subtle}; font-size: 12px; }}
+            QLabel#rowkey {{ color: {subtle}; font-size: 13px; }}
+            QLabel#rowval {{ font-size: 13px; font-weight: 600; }}
+            QLabel#statuspill {{
+                background-color: {pill_bg}; color: {pill_fg};
+                border-radius: 999px; padding: 5px 14px; font-size: 12px; font-weight: 700;
+            }}
+            QLabel#linkval {{
+                background-color: {input_bg}; border: 1px solid {input_border};
+                border-radius: 8px; padding: 7px 10px; color: {text_color}; font-size: 12px;
+            }}
+            QLabel#notef {{ color: {subtle}; font-size: 12px; }}
+            QFrame#headband {{ background-color: {header_bg}; border-top-left-radius: 12px; border-top-right-radius: 12px; }}
+            QFrame#card {{
+                background-color: {card_bg}; border: 1px solid {card_border};
+                border-radius: 12px;
+            }}
+            QFrame#badge {{
+                background-color: {brand}; border-radius: 22px;
+                color: #FFFFFF; font-size: 20px; font-weight: 800;
+            }}
+            QPushButton {{ border-radius: 9px; padding: 9px 20px; font-weight: 700; font-size: 13px; }}
+            QPushButton#primary-btn {{ background-color: {brand}; color: #FFFFFF; border: 1px solid {brand}; }}
+            QPushButton#primary-btn:hover {{ background-color: {brand_hover}; border-color: {brand_hover}; }}
+            QPushButton#primary-btn:pressed {{ background-color: {brand_pressed}; border-color: {brand_pressed}; }}
+            QPushButton#secondary-btn {{ background-color: transparent; color: {text_color}; border: 1px solid {input_border}; }}
+            QPushButton#secondary-btn:hover {{ background-color: {card_bg}; }}
+            QPushButton#secondary-btn:pressed {{ background-color: {card_border}; }}
+            QPushButton#mini-btn {{
+                background-color: transparent; color: {brand}; border: 1px solid {brand};
+                border-radius: 7px; padding: 4px 12px; font-weight: 700; font-size: 12px;
+            }}
+            QPushButton#mini-btn:hover {{ background-color: {brand}; color: #FFFFFF; }}
+            QPushButton#mini-btn:pressed {{ background-color: {brand_hover}; color: #FFFFFF; border-color: {brand_hover}; }}
+            """
+        )
+        lay = QVBoxLayout(dlg)
+        lay.setContentsMargins(0, 0, 0, 18)
+        lay.setSpacing(0)
+        # --- header band ---
+        try:
+            from PySide6.QtWidgets import QFrame as _QFrame
+
+            head = _QFrame()
+            head.setObjectName("headband")
+            head_lay = QHBoxLayout(head)
+            head_lay.setContentsMargins(18, 14, 18, 14)
+            head_lay.setSpacing(12)
+            badge = QLabel("🚀")
+            badge.setObjectName("badge")
+            badge.setAlignment(Qt.AlignCenter)
+            badge.setFixedSize(44, 44)
+            head_lay.addWidget(badge)
+            title_box = QVBoxLayout()
+            title_box.setSpacing(2)
+            title_lbl = QLabel(_tx("publish.confirm_title", "Xác nhận xuất bản"))
+            title_lbl.setObjectName("dlg-title")
+            sub_lbl = QLabel(_tx("publish.row_name", "Tên bài") + f":  {name}")
+            sub_lbl.setObjectName("dlg-sub")
+            sub_lbl.setWordWrap(True)
+            title_box.addWidget(title_lbl)
+            title_box.addWidget(sub_lbl)
+            head_lay.addLayout(title_box, 1)
+            lay.addWidget(head)
+        except Exception:
+            pass
+        # --- card ---
+        try:
+            from PySide6.QtWidgets import QFrame as _QFrame2
+
+            card = _QFrame2()
+            card.setObjectName("card")
+            card_lay = QVBoxLayout(card)
+            card_lay.setContentsMargins(16, 14, 16, 14)
+            card_lay.setSpacing(9)
+            info_rows = [
+                (_tx("publish.row_questions", "Số câu hỏi"), str(q_count)),
+                (_tx("publish.row_size", "Dung lượng"), size_txt),
+            ]
+            for key_txt, val_txt in info_rows:
+                try:
+                    row = QHBoxLayout()
+                    k = QLabel(key_txt)
+                    k.setObjectName("rowkey")
+                    k.setFixedWidth(110)
+                    v = QLabel(val_txt)
+                    v.setObjectName("rowval")
+                    v.setWordWrap(True)
+                    row.addWidget(k)
+                    row.addWidget(v, 1)
+                    card_lay.addLayout(row)
+                except Exception:
+                    pass
+            try:
+                srow = QHBoxLayout()
+                sk = QLabel(_tx("publish.row_status", "Trạng thái"))
+                sk.setObjectName("rowkey")
+                sk.setFixedWidth(110)
+                pill = QLabel(status_txt)
+                pill.setObjectName("statuspill")
+                pill.setWordWrap(True)
+                srow.addWidget(sk)
+                srow.addWidget(pill, 1)
+                card_lay.addLayout(srow)
+            except Exception:
+                pass
+            try:
+                link_lbl = QLabel(_tx("publish.row_link", "Link sẽ dùng"))
+                link_lbl.setObjectName("rowkey")
+                card_lay.addWidget(link_lbl)
+                link_row = QHBoxLayout()
+                link_val = QLabel(link_txt)
+                link_val.setObjectName("linkval")
+                link_val.setWordWrap(True)
+                link_val.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                link_row.addWidget(link_val, 1)
+                copy_btn = QPushButton(_tx("publish.copy_button", "Copy"))
+                copy_btn.setObjectName("mini-btn")
+                copy_btn.setCursor(Qt.PointingHandCursor)
+
+                def _copy_preview(checked=False):
+                    try:
+                        from PySide6.QtWidgets import QApplication as _QA
+
+                        _QA.clipboard().setText(link_txt)
+                        try:
+                            copy_btn.setText("✓")
+                            from PySide6.QtCore import QTimer as _QT
+
+                            _QT.singleShot(1200, lambda: copy_btn.setText(_tx("publish.copy_button", "Copy")))
+                        except Exception:
+                            pass
+                    except Exception:
+                        pass
+
+                copy_btn.clicked.connect(_copy_preview)
+                link_row.addWidget(copy_btn)
+                card_lay.addLayout(link_row)
+            except Exception:
+                pass
+            try:
+                note = QLabel(_tx("publish.expiry_note", "Link có hiệu lực ~15 ngày và tự gia hạn khi bạn mở app."))
+                note.setWordWrap(True)
+                note.setObjectName("notef")
+                card_lay.addWidget(note)
+            except Exception:
+                pass
+            wrap = QVBoxLayout()
+            wrap.setContentsMargins(18, 14, 18, 0)
+            wrap.addWidget(card)
+            lay.addLayout(wrap)
+        except Exception:
+            pass
+        footer = QHBoxLayout()
+        footer.setContentsMargins(18, 6, 18, 0)
+        footer.addStretch()
+        cancel_btn = QPushButton(_tx("common.cancel", "Hủy"))
+        cancel_btn.setObjectName("secondary-btn")
+        cancel_btn.setCursor(Qt.PointingHandCursor)
+        ok_btn = QPushButton(_tx("publish.confirm_ok", "Xuất bản"))
+        ok_btn.setObjectName("primary-btn")
+        ok_btn.setCursor(Qt.PointingHandCursor)
+        try:
+            ok_btn.setDefault(True)
+        except Exception:
+            pass
+        cancel_btn.clicked.connect(dlg.reject)
+        ok_btn.clicked.connect(dlg.accept)
+        footer.addWidget(cancel_btn)
+        footer.addWidget(ok_btn)
+        lay.addLayout(footer)
+        try:
+            return dlg.exec() == QDialog.Accepted
+        except Exception:
+            return False
+
     def handle_publish_web(self):
         """Xuất HTML 1-file vào vùng tạm và đăng lên Firebase + trả link hosting"""
         from PySide6.QtWidgets import QMessageBox, QDialog, QVBoxLayout, QLabel, QLineEdit, QPushButton
@@ -10262,6 +14846,45 @@ QLabel {
                 loading_msg = "Publishing..."
 
             name = (current_project or {}).get('name', 'EduPlay_Game')
+
+            # Progress callback to update loading message (dung chung 2 phase)
+            def _progress(payload, total=None):
+                try:
+                    if isinstance(payload, dict):
+                        stage = str(payload.get("stage") or "").strip().lower()
+                        current = int(payload.get("current") or 0)
+                        total_chunks = int(payload.get("total") or 0)
+                        percent = int(payload.get("percent") or 0)
+                        if stage == "compressing":
+                            msg = "Đang nén toàn bộ dữ liệu trước khi upload..."
+                        elif stage == "uploading":
+                            msg = f"Đang tải dữ liệu lên server: {current}/{total_chunks} phần ({percent}%)"
+                        elif stage == "finalizing":
+                            msg = "Đang tạo link chia sẻ..."
+                        elif stage == "completed":
+                            msg = "Đã tạo xong link, đang hoàn tất hiển thị..."
+                        else:
+                            msg = str(payload.get("message") or "").strip() or "Đang xuất lên web..."
+                    else:
+                        current = int(payload or 0)
+                        total_chunks = int(total or 0)
+                        percent = int((current / total_chunks) * 100) if total_chunks else 0
+                        msg = f"Đang tải dữ liệu lên server: {current}/{total_chunks} phần ({percent}%)"
+                    print(f"[PUBLISH] {msg}")
+                    from PySide6.QtCore import QTimer
+
+                    def _apply():
+                        try:
+                            self._show_loading(msg, "web")
+                        except Exception:
+                            pass
+
+                    try:
+                        QTimer.singleShot(0, self, _apply)
+                    except Exception:
+                        QTimer.singleShot(0, _apply)
+                except Exception:
+                    pass
 
             def _task():
                 tmp_dir = PathResolver.resolve_publish_cache_dir()
@@ -10306,55 +14929,80 @@ QLabel {
                 safe = ''.join([c for c in name if c.isalnum() or c in (' ', '-', '_')]).strip().replace(' ', '_') or 'EduPlay_Game'
                 out = tmp_dir / (safe + '.html')
                 proj_id = (current_project or {}).get('id', '')
-                
-                # Progress callback to update loading message
-                def _progress(payload, total=None):
-                    try:
-                        if isinstance(payload, dict):
-                            stage = str(payload.get("stage") or "").strip().lower()
-                            current = int(payload.get("current") or 0)
-                            total_chunks = int(payload.get("total") or 0)
-                            percent = int(payload.get("percent") or 0)
-                            if stage == "compressing":
-                                msg = "Đang nén toàn bộ dữ liệu trước khi upload..."
-                            elif stage == "uploading":
-                                msg = f"Đang tải dữ liệu lên server: {current}/{total_chunks} phần ({percent}%)"
-                            elif stage == "finalizing":
-                                msg = "Đang tạo link chia sẻ..."
-                            elif stage == "completed":
-                                msg = "Đã tạo xong link, đang hoàn tất hiển thị..."
-                            else:
-                                msg = str(payload.get("message") or "").strip() or "Đang xuất lên web..."
-                        else:
-                            current = int(payload or 0)
-                            total_chunks = int(total or 0)
-                            percent = int((current / total_chunks) * 100) if total_chunks else 0
-                            msg = f"Đang tải dữ liệu lên server: {current}/{total_chunks} phần ({percent}%)"
-                        print(f"[PUBLISH] {msg}")
-                        from PySide6.QtCore import QTimer
 
-                        def _apply():
-                            try:
-                                self._show_loading(msg, "web")
-                            except Exception:
-                                pass
+                # --- Phase 1 xong: tinh tom tat de UI hoi xac nhan ---
+                try:
+                    questions = (current_project or {}).get("questions", []) or []
+                    q_count = len(questions) if isinstance(questions, list) else 0
+                except Exception:
+                    q_count = 0
+                try:
+                    html_bytes = out.stat().st_size if out.exists() else 0
+                except Exception:
+                    html_bytes = 0
+                preview = {
+                    "key": "", "play_link": "", "reused": False,
+                    "conflict": False, "base_slug": "", "resolved": False,
+                }
+                try:
+                    b64 = export_service._read_service_account_b64()
+                    sinfo = export_service._decode_service_account_info(b64)
+                    resolved = export_service._resolve_publish_key(
+                        name,
+                        project_id=proj_id,
+                        database_url="https://eduplay-game-default-rtdb.firebaseio.com",
+                        service_account_b64=b64,
+                        service_account_info=sinfo,
+                    )
+                    if isinstance(resolved, (tuple, list)) and len(resolved) == 2:
+                        pkey, pinfo = str(resolved[0] or "").strip(), dict(resolved[1] or {})
+                    else:
+                        pkey, pinfo = str(resolved or "").strip(), {}
+                    if pkey:
+                        preview.update({
+                            "key": pkey,
+                            "play_link": f"{export_service.PLAY_BASE_URL}/{pkey}",
+                            "reused": bool((pinfo or {}).get("reused")),
+                            "conflict": bool((pinfo or {}).get("conflict")),
+                            "base_slug": str((pinfo or {}).get("base_slug") or ""),
+                            "resolved": True,
+                        })
+                except Exception:
+                    pass
+                return {
+                    "success": True,
+                    "phase": "preview",
+                    "tmp_dir": str(tmp_dir),
+                    "name": name,
+                    "html_path": str(out),
+                    "html_bytes": int(html_bytes),
+                    "question_count": int(q_count),
+                    "preview": preview,
+                }
 
-                        try:
-                            QTimer.singleShot(0, self, _apply)
-                        except Exception:
-                            QTimer.singleShot(0, _apply)
-                    except Exception:
-                        pass
-                
-                pub = export_service.publish_to_firebase(
-                    str(out),
-                    name,
-                    "https://eduplay-game-default-rtdb.firebaseio.com",
-                    project_id=proj_id,
-                    progress_callback=_progress,
-                    project_data=current_project,
-                )
-                export_service.cleanup_firebase_old("https://eduplay-game-default-rtdb.firebaseio.com", days=15, max_items=300)
+            def _task_upload():
+                tmp_dir = PathResolver.resolve_publish_cache_dir()
+                export_service = ExportService()
+                safe = ''.join([c for c in name if c.isalnum() or c in (' ', '-', '_')]).strip().replace(' ', '_') or 'EduPlay_Game'
+                out = tmp_dir / (safe + '.html')
+                proj_id = (current_project or {}).get('id', '')
+
+                _run_log(f"upload begin: name={name!r} file={out}")
+                try:
+                    pub = export_service.publish_to_firebase(
+                        str(out),
+                        name,
+                        "https://eduplay-game-default-rtdb.firebaseio.com",
+                        project_id=proj_id,
+                        progress_callback=_progress,
+                        project_data=current_project,
+                    )
+                except Exception as e_pub:
+                    _run_log(f"upload publish_to_firebase raised: {e_pub!r}")
+                    raise
+                _run_log(f"upload publish returned ok={bool((pub or {}).get('ok'))} err={str((pub or {}).get('error') or '')[:200]}")
+                # Don dep game het han duoc tach rieng, chay sau khi da co link
+                # (khong nam tren duong gang de tranh treo/crash sau upload).
                 if not isinstance(pub, dict) or not pub.get("ok") or not pub.get("play_link"):
                     err_text = ""
                     try:
@@ -10382,9 +15030,37 @@ QLabel {
                     "tmp_dir": str(tmp_dir),
                     "name": name,
                     "links": {"play": link_line, "db": db_link, "key": key_val},
+                    "key_reused": bool(pub.get("key_reused")),
+                    "name_conflict": bool(pub.get("name_conflict")),
+                    "base_slug": str(pub.get("base_slug") or ""),
                 }
 
-            def _done(result, error):
+            def _done_export(result, error):
+                try:
+                    self._hide_loading()
+                except Exception:
+                    pass
+                if error or not isinstance(result, dict) or not result.get("success"):
+                    _done_upload(result, error)
+                    return
+                try:
+                    if not self._confirm_publish(result):
+                        try:
+                            import os as _os
+                            _hp = str((result or {}).get("html_path") or "")
+                            if _hp and _os.path.exists(_hp):
+                                _os.remove(_hp)
+                        except Exception:
+                            pass
+                        return
+                except Exception:
+                    pass
+                try:
+                    self._run_background_task(_task_upload, _done_upload, loading_msg, "web")
+                except Exception as e:
+                    _done_upload(None, e)
+
+            def _done_upload(result, error):
                 if error:
                     if I18n:
                         title = I18n.t('publish.error_title', lang)
@@ -10592,6 +15268,39 @@ QLabel {
                         lay.addWidget(hint_lbl)
                 except Exception:
                     pass
+                try:
+                    if bool(result.get("name_conflict")):
+                        try:
+                            base = str(result.get("base_slug") or name or "").strip()
+                        except Exception:
+                            base = ""
+                        try:
+                            if I18n:
+                                conflict_msg = I18n.t("publish.conflict_note", lang, name=base)
+                                if not conflict_msg or conflict_msg == "publish.conflict_note":
+                                    raise ValueError("i18n-missing")
+                            else:
+                                raise ValueError("i18n-missing")
+                        except Exception:
+                            if lang == "vi":
+                                conflict_msg = (
+                                    f'Tên "{base}" đã có máy khác xuất bản trước, nên EduPlay đã tạo link riêng cho máy bạn '
+                                    "để không ghi đè lên bài của họ. Link này ổn định cho mọi lần xuất bản sau."
+                                )
+                            else:
+                                conflict_msg = (
+                                    f'The name "{base}" was already published by another machine, so EduPlay created a separate '
+                                    "link for this machine instead of overwriting theirs. This link stays stable for future publishes."
+                                )
+                        conflict_lbl = QLabel(conflict_msg)
+                        conflict_lbl.setWordWrap(True)
+                        try:
+                            conflict_lbl.setStyleSheet(f"color: {text_color}; background-color: {secondary_hover_bg}; border-radius: 8px; padding: 8px;")
+                        except Exception:
+                            pass
+                        lay.addWidget(conflict_lbl)
+                except Exception:
+                    pass
                 footer = QHBoxLayout()
                 footer_widget = QWidget()
                 footer_widget.setLayout(footer)
@@ -10619,8 +15328,34 @@ QLabel {
                     self.show_system_notification(ttl, link_line, "success")
                 except Exception:
                     pass
+                # Don dep game het han chay RIENG sau khi da hien link
+                # (fire-and-forget, khong nam tren duong gang upload).
+                # Dat EDUPLAY_SKIP_CLEANUP=1 de bo qua (chan doan crash).
+                try:
+                    import os as _os_skip
 
-            self._run_background_task(_task, _done, loading_msg, "web")
+                    if str(_os_skip.environ.get("EDUPLAY_SKIP_CLEANUP") or "").strip().lower() in ("1", "true", "yes"):
+                        _run_log("cleanup skipped by EDUPLAY_SKIP_CLEANUP=1")
+                    else:
+                        def _task_cleanup():
+                            try:
+                                from eduplay.core.export_service import ExportService as _ES
+                                _run_log("cleanup begin")
+                                info = _ES().cleanup_firebase_old(
+                                    "https://eduplay-game-default-rtdb.firebaseio.com",
+                                    days=15,
+                                    max_items=300,
+                                )
+                                _run_log(f"cleanup done: {info}")
+                            except Exception as e_cl:
+                                _run_log(f"cleanup failed: {e_cl!r}")
+                            return True
+
+                        self._run_background_task(_task_cleanup, None, None, "default")
+                except Exception:
+                    pass
+
+            self._run_background_task(_task, _done_export, loading_msg, "web")
         except Exception as e:
             if I18n:
                 title = I18n.t('publish.error_title', lang)

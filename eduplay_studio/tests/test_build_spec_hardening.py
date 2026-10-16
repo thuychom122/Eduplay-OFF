@@ -33,6 +33,7 @@ class TestNuitkaBuildPipeline(unittest.TestCase):
         self.assertIn("--include-data-dir", self.content)
         self.assertIn("--windows-icon-from-ico", self.content)
         self.assertIn("--windows-console-mode=disable", self.content)
+        self.assertIn("tools\\ensure_app_icon.py", self.content)
 
     def test_build_script_hardens_large_third_party_packages(self):
         self.assertIn("--nofollow-import-to=fitz", self.content)

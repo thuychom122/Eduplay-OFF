@@ -79,7 +79,7 @@ class TestEditorQuestionActions(unittest.TestCase):
             on_question_updated=mock.Mock(),
         )
 
-        with mock.patch("PySide6.QtWidgets.QMessageBox.question", return_value=QMessageBox.No):
+        with mock.patch("eduplay.ui.widgets.confirm_dialog.ask_confirm", return_value=False):
             EditorScreen.on_delete_selected_question_requested(dummy, payload)
 
         dummy.on_question_updated.assert_not_called()
@@ -93,7 +93,7 @@ class TestEditorQuestionActions(unittest.TestCase):
             on_question_updated=mock.Mock(),
         )
 
-        with mock.patch("PySide6.QtWidgets.QMessageBox.question", return_value=QMessageBox.Yes):
+        with mock.patch("eduplay.ui.widgets.confirm_dialog.ask_confirm", return_value=True):
             EditorScreen.on_delete_selected_question_requested(dummy, payload)
 
         dummy.on_question_updated.assert_called_once_with(
@@ -306,20 +306,20 @@ class TestEditorQuestionActions(unittest.TestCase):
             },
             "es": {
                 "duplicate_question_btn": "Duplicar",
-                "save_question_btn": "Save Question",
-                "quick_preview_question_btn": "Preview Question",
+                "save_question_btn": "Guardar pregunta",
+                "quick_preview_question_btn": "Vista previa de la pregunta",
                 "delete_question_btn": "Eliminar pregunta",
             },
             "fr": {
                 "duplicate_question_btn": "Dupliquer",
-                "save_question_btn": "Save Question",
-                "quick_preview_question_btn": "Preview Question",
+                "save_question_btn": "Enregistrer la question",
+                "quick_preview_question_btn": "Aperçu de la question",
                 "delete_question_btn": "Supprimer la question",
             },
             "de": {
                 "duplicate_question_btn": "Duplizieren",
-                "save_question_btn": "Save Question",
-                "quick_preview_question_btn": "Preview Question",
+                "save_question_btn": "Frage speichern",
+                "quick_preview_question_btn": "Frage ansehen",
                 "delete_question_btn": "Frage löschen",
             },
         }

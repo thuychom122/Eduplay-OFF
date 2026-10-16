@@ -204,3 +204,120 @@ def extract_question_numbers(text):
         seen.add(n)
         out.append(n)
     return out
+
+
+def safe_calculate(expression: str):
+    """Tính biểu thức toán học 1 cách an toàn (offline, đúng 100%).
+    Hỗ trợ: + - * / % ^ ( ) số thập phân, x/X/× (nhân), :/÷ (chia), , (thập phân).
+    Người dùng được gõ x thay * và : thay / , tự hiểu. Vd: 12x8:4 = 24.
+    Trả về (ok: bool, cleaned_expr: str, result_or_error: Any).
+    """
+    import re as _re
+    import ast as _ast
+    try:
+        raw = str(expression or "")
+    except Exception:
+        raw = ""
+    if not raw.strip():
+        return (False, "", "Thiếu biểu thức")
+    try:
+        e = raw.strip().lower()
+        # Từ tiếng Việt phổ biến
+        e = e.replace("cộng", "+").replace("cong", "+")
+        e = e.replace("trừ", "-").replace("tru", "-")
+        e = e.replace("nhân", "*").replace("nhan", "*")
+        e = e.replace("chia", "/")
+        e = e.replace("mũ", "**").replace("mu", "**")
+        e = e.replace("×", "*").replace("÷", "/").replace(",", ".")
+        # ':' là chia (12:4 = 12/4). Cả ':' thường và '：' fullwidth.
+        e = e.replace("：", ":")
+        # 'x' là nhân: 12x8, 12 x 8, (12+8)x2, 12x(8+1). Chỉ đổi khi kẹp giữa số/ngoặc.
+        try:
+            e = _re.sub(r"(?<=[\d\)\]])\s*[xX×]\s*(?=[\d\(\[])", "*", e)
+        except Exception:
+            pass
+        try:
+            e = _re.sub(r"(?<=[\d\)\]])\s*:\s*(?=[\d\(\[])", "/", e)
+        except Exception:
+            # fallback đơn giản: mọi ':' còn lại giữa số đều là chia
+            try:
+                e = _re.sub(r"(?<=\d)\s*:\s*(?=\d)", "/", e)
+            except Exception:
+                pass
+        e = _re.sub(r"[^0-9\.\+\-\*\/\%\(\)\s\^]", "", e).strip()
+        e = e.replace("^", "**")
+        # bỏ dấu * / thừa đầu/cuối (vd: "*8+")
+        e = e.strip("*/%+")
+        if not e:
+            return (False, "", "Không hiểu biểu thức")
+        if not _re.search(r"\d", e):
+            return (False, "", "Không hiểu biểu thức")
+        _allowed = {
+            _ast.Expression, _ast.BinOp, _ast.UnaryOp, _ast.Num, _ast.Constant,
+            _ast.Add, _ast.Sub, _ast.Mult, _ast.Div, _ast.Mod, _ast.Pow,
+            _ast.USub, _ast.UAdd, _ast.Load,
+        }
+        tree = _ast.parse(e, mode="eval")
+        for n in _ast.walk(tree):
+            if type(n) not in _allowed:
+                return (False, e, "Biểu thức không an toàn")
+        res = eval(compile(tree, "<calc>", "eval"), {"__builtins__": {}})
+        # làm gọn số nguyên dạng 101.0 -> 101
+        try:
+            if isinstance(res, float) and res.is_integer():
+                res = int(res)
+        except Exception:
+            pass
+        return (True, e, res)
+    except ZeroDivisionError:
+        return (False, str(expression or "").strip(), "Không chia được cho 0")
+    except SyntaxError:
+        return (False, str(expression or "").strip(), "Biểu thức chưa đúng, ví dụ: 12*8+5")
+    except Exception as ex:
+        return (False, str(expression or "").strip(), str(ex) or "Biểu thức chưa đúng")
+
+
+def extract_calc_expression(text: str):
+    """Tách biểu thức toán từ tin nhắn chat.
+    Nhận: 'tính 12*8+5', 'tinh 12x8+5', 'tính 12x8:4', 'calculate (12+8)/4', '12*8+5=?', '12:4=?', '=12x8'
+    Người dùng được gõ x thay * và : thay / . Vd: 12x8:4 = 24.
+    Trả về biểu thức hoặc ''.
+    """
+    import re as _re
+    try:
+        s = str(text or "").strip()
+    except Exception:
+        return ""
+    if not s:
+        return ""
+    # Bỏ phần [ATTACHMENTS] nếu có
+    try:
+        s = s.split("[ATTACHMENTS]", 1)[0].strip()
+    except Exception:
+        pass
+    low = s.lower()
+    # Guard: 'tính năng / tinh nang' là hỏi tính năng, KHÔNG phải phép tính
+    if "tính năng" in low or "tinh nang" in low:
+        return ""
+    # prefix tường minh
+    prefixes = ("tính", "tinh", "calculate", "calc", "solve", "solve math", "kết quả", "ket qua", "bằng bao nhiêu", "bang bao nhieu")
+    expr = ""
+    for p in prefixes:
+        if low.startswith(p):
+            expr = s[len(p):].strip(" :ş=→>-–—?\"'").strip()
+            break
+    if not expr:
+        # '12*8+5=?' hoặc chứa '=' -> lấy vế trái
+        if "=" in s and any(ch.isdigit() for ch in s):
+            left = s.split("=", 1)[0].strip()
+            # chỉ nhận nếu vế trái trông như biểu thức (chấp nhận x và : )
+            if any(ch.isdigit() for ch in left) and any(op in left for op in ("+", "-", "*", "/", "x", "X", "×", ":", "：", "÷", "^", "%", "(", "cộng", "trừ", "nhân", "chia")):
+                expr = left.strip()
+        else:
+            # cả tin nhắn là biểu thức thuần? vd: '12*8+5', '12x8:4', '(12+8)/4'
+            t = s.strip().rstrip("?").strip()
+            if any(ch.isdigit() for ch in t):
+                tmp = t.lower().replace("×", "*").replace("÷", "/").replace("：", ":")
+                if _re.fullmatch(r"[\d\s\.\+\-\*\/\%\^\:\(\)xX×÷：]+", tmp) and _re.search(r"\d\s*[\+\-\*\/\%\^\:xX×÷]\s*\d", tmp):
+                    expr = t
+    return str(expr or "").strip()

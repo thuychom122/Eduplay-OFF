@@ -139,7 +139,7 @@ class TestIconButtonLabelsAndEditorHeader(unittest.TestCase):
     def test_settings_icon_uses_gear_glyph(self):
         from eduplay.ui.icon_factory import icon_glyph
 
-        self.assertEqual(icon_glyph("settings"), "⚙")
+        self.assertEqual(icon_glyph("settings"), "⚙️")
 
     def test_help_standard_icon_uses_question_mark_glyph(self):
         from eduplay.ui.icon_factory import build_glyph_icon, build_standard_ui_icon
@@ -169,7 +169,7 @@ class TestIconButtonLabelsAndEditorHeader(unittest.TestCase):
         return bytes(ptr[: image.sizeInBytes()])
 
     def test_settings_standard_icon_falls_back_to_internal_icon_when_system_icon_missing(self):
-        from eduplay.ui.icon_factory import build_line_icon, build_standard_ui_icon
+        from eduplay.ui.icon_factory import build_glyph_icon, build_standard_ui_icon
 
         class _NullStyle:
             def standardIcon(self, _pixmap_kind):
@@ -183,22 +183,24 @@ class TestIconButtonLabelsAndEditorHeader(unittest.TestCase):
 
         self.assertFalse(icon.isNull())
 
-        expected = build_line_icon("settings", "#374151", 18, stroke_width=1.9)
+        expected = build_glyph_icon("settings", "#374151", 18)
         self.assertEqual(self._icon_bytes(icon), self._icon_bytes(expected))
 
     def test_settings_standard_icon_ignores_non_gear_system_theme_icon(self):
-        from eduplay.ui.icon_factory import build_line_icon, build_standard_ui_icon
+        from eduplay.ui.icon_factory import build_glyph_icon, build_standard_ui_icon
+        from eduplay.ui.icon_factory import build_line_icon
 
-        fake_icon = build_line_icon("play", "#374151", 18, stroke_width=1.9)
+        # Use a dummy non-gear icon to ensure fromTheme is ignored
+        dummy = build_line_icon("play", "#374151", 18, stroke_width=1.9)
 
         class _FakeStyle:
             def standardIcon(self, _pixmap_kind):
-                return fake_icon
+                return dummy
 
-        with mock.patch("PySide6.QtGui.QIcon.fromTheme", return_value=fake_icon):
+        with mock.patch("PySide6.QtGui.QIcon.fromTheme", return_value=dummy):
             icon = build_standard_ui_icon("settings", _FakeStyle())
 
-        expected = build_line_icon("settings", "#374151", 18, stroke_width=1.9)
+        expected = build_glyph_icon("settings", "#374151", 18)
         self.assertEqual(self._icon_bytes(icon), self._icon_bytes(expected))
 
     def test_browser_import_button_uses_same_regular_import_icon_as_editor_panel(self):

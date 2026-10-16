@@ -13,6 +13,8 @@ for name in [
     "tests.test_icon_button_labels_and_editor_header",
     "tests.test_editor_question_actions",
     "tests.test_editor_right_panel_preview",
+    "tests.test_import_math_brackets",
+    "tests.test_instant_splash",
 ]:
     suite.addTests(loader.loadTestsFromName(name))
 

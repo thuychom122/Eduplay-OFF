@@ -4,16 +4,16 @@ EduPlay Studio 1.0.0 is the first release. This roadmap describes candidate dire
 
 ## 1.1 (planned)
 
-- More question types (sorting, sequencing)
-- Undo/redo in editor
+- Re-expose Native/PyGame export with a real button (code exists, UI missing)
 - Better export diagnostics (clearer error messages)
-- More templates and UI polish
+- More question types (essay is implemented in a secondary panel, not yet promoted)
+- Settings: per-machine link management UI polish
 
 ## 1.2 (planned)
 
 - Project backup/export/import improvements
 - Better asset management (dedupe, compression options)
-- More language coverage for UI + exports
+- More language coverage for exported games
 
 ## 2.0 (future)
 

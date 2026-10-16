@@ -10,15 +10,18 @@ This document explains how to report security vulnerabilities related to EduPlay
 ## Secret management
 
 - Do not commit API keys or tokens into the repository.
-- EduPlay Studio uses Groq (OpenAI-compatible API). Store keys in environment variables:
-  - `GROQ_API_KEY` or `EDUPLAY_GROQ_API_KEY`
-- When sharing logs/screenshots, remove/obfuscate any secrets.
+- EduPlay Studio talks to its own AI gateway (OpenAI-compatible) and registers the
+  device automatically — **no API key is required to run the app**.
+- Optional user-entered keys (OpenAI / Gemini, in *Cài đặt → AI*) are stored locally in
+  `Documents\EduPlay\Settings`. Device tokens live in `ai_proxy_token.txt` there.
+- Logs live in `%LOCALAPPDATA%\EduPlayStudio\logs` — `crash.log`, `run.log`,
+  `faulthandler.log`. When sharing logs/screenshots, remove/obfuscate any secrets.
 
 ## Reporting a vulnerability
 
 Please do not publicly disclose vulnerabilities before contacting the maintainers.
 
-- Email: eduplay.line@hotmail.com
+- Email: support@eduplay-studio.io.vn
 
 Include:
 - OS + Python version

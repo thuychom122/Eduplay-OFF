@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import re
+import warnings
+warnings.filterwarnings("ignore", category=SyntaxWarning)
 from pathlib import Path
 
 
@@ -38,6 +40,9 @@ def build_preview_placeholder_html(*, lang: str = "vi", title: str = "EduPlay Pr
     }}
     .box {{
       width: min(560px, 100%);
+      min-width: 0;
+      overflow-wrap: anywhere;
+      word-break: break-word;
       border: 1px solid rgba(255, 255, 255, 0.14);
       border-radius: 16px;
       background: rgba(255, 255, 255, 0.06);
@@ -87,9 +92,14 @@ def build_preview_placeholder_html(*, lang: str = "vi", title: str = "EduPlay Pr
     </div>
   </div>
   <script>
-    window.setTimeout(function () {{
-      window.location.reload();
-    }}, 900);
+    // Tận dụng RAM: preload, fade mượt, reload 1 lần sau 1.4s (đủ cho thread ghi file 11MB)
+    (function(){{
+      document.documentElement.style.transition='opacity 220ms ease';
+      setTimeout(function(){{
+        document.documentElement.style.opacity='0';
+        setTimeout(function(){{ window.location.reload(); }}, 220);
+      }}, 1400);
+    }})();
   </script>
 </body>
 </html>
@@ -191,6 +201,165 @@ def inject_quick_preview_autostart(html: str, question_index: int = 0) -> str:
     var preloader = document.getElementById('preloader');
     if (preloader) { preloader.style.display = 'none'; }
   };
+
+  window.__EDUPLAY_QUICK_PREVIEW_DIRECT_RENDER_FISH = false;
+  window.__EDUPLAY_QUICK_PREVIEW_DIRECT_RENDER_MILLIONAIRE = false;
+
+  var introComplete = false;
+  window.__EDUPLAY_QUICK_PREVIEW_ON_START_CLICK = function onStartClick() {
+    if (introComplete) { return; }
+    introComplete = true;
+    try {
+      ['start-btn', 'startOverlay', 'start-overlay', 'intro-screen', 'mainMenu', 'preloader'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el && el.style) { el.style.display = 'none'; }
+      });
+      if (typeof window.__EDUPLAY_QUICK_PREVIEW_MARK_STARTED === 'function') {
+        window.__EDUPLAY_QUICK_PREVIEW_MARK_STARTED();
+      }
+    } catch (e) {}
+  };
+  var startBtn = document.getElementById('start-btn');
+  if (startBtn) {
+    try { startBtn.addEventListener('click', window.__EDUPLAY_QUICK_PREVIEW_ON_START_CLICK); } catch (e) {}
+    try {
+      startBtn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    } catch (e) {}
+  }
+
+  window.__EDUPLAY_QUICK_PREVIEW_OPEN_FIRST_QUESTION = function openFirstQuestionHook() {
+    try {
+      var overlay = document.getElementById('start-overlay');
+      if (overlay && overlay.style) { overlay.style.display = 'none'; }
+      if (typeof showQuestion === 'function') { showQuestion(0); }
+      if (typeof window.__EDUPLAY_QUICK_PREVIEW_MARK_STARTED === 'function') {
+        window.__EDUPLAY_QUICK_PREVIEW_MARK_STARTED();
+      }
+    } catch (e) {
+      console.warn('[Preview] open first question failed:', e);
+    }
+  };
+  window.__EDUPLAY_QUICK_PREVIEW_FALLBACK_OPEN_FIRST_QUESTION = function () {
+    try {
+      if (typeof window.__EDUPLAY_QUICK_PREVIEW_OPEN_FIRST_QUESTION === 'function') {
+        window.__EDUPLAY_QUICK_PREVIEW_OPEN_FIRST_QUESTION();
+        return;
+      }
+      if (typeof showQuestion === 'function') { showQuestion(0); }
+    } catch (e) {
+      console.warn('[Preview] fallback open first question failed:', e);
+    }
+  };
+
+  function bindMillionairePreviewAction(target, flagName, handler) {
+    if (!target || target[flagName]) { return; }
+    target[flagName] = true;
+    try { target.addEventListener('click', handler); } catch (e) {}
+    try { target.addEventListener('touchend', handler); } catch (e) {}
+  }
+
+  function resetMillionairePreviewState(answerBlocks) {
+    try {
+      (answerBlocks || []).forEach(function (block) {
+        if (!block || !block.classList) { return; }
+        block.classList.remove('answerCorrect', 'answerIncorrect', 'answerCheck', 'locked');
+        var highlightReset = block.highlightAnswerReset || null;
+        if (typeof highlightReset === 'function') { highlightReset.call(block); }
+      });
+    } catch (e) {}
+  }
+
+  function installMillionairePreviewAnswerFallback(question, answerBlocks, answerTexts) {
+    try {
+      // Neu game that da san sang (co highLightAnswerOrange) thi de game that xu ly, khong dung fallback
+      if (typeof highLightAnswerOrange === 'function' && typeof highLightAnswerGreen === 'function') {
+        return;
+      }
+      resetMillionairePreviewState(answerBlocks);
+      (answerBlocks || []).forEach(function (block) {
+        bindMillionairePreviewAction(block, '__EDUPLAY_PREVIEW_ANSWER_BOUND', function (event) {
+          try { event.preventDefault(); } catch (e) {}
+          try { resetMillionairePreviewState(answerBlocks); } catch (e) {}
+          try { block.classList.add('answerCheck'); block.classList.remove('answer'); } catch (e) {}
+          // Giu vang y nhu goc WWBM 4s roi moi xoa (khop highLightAnswerGreen 4000)
+          window.setTimeout(function () {
+            try { block.classList.remove('answerCheck'); block.classList.add('answer'); } catch (e) {}
+          }, 4000);
+        });
+      });
+    } catch (e) {
+      console.warn('[Preview] millionaire answer fallback failed:', e);
+    }
+  }
+
+  function bindMillionairePreviewLifelines(question, answerBlocks, answerTexts) {
+    try {
+      var previewTextNodes = document.querySelectorAll('.answerText, .answerText *, .llText, .llText *');
+      if (previewTextNodes && previewTextNodes.length) {
+        for (var i = 0; i < previewTextNodes.length; i++) {
+          previewTextNodes[i].setAttribute('data-preview-selectable', '1');
+        }
+      }
+      var ans1 = document.getElementById('ans1');
+      if (ans1 && answerTexts.indexOf(ans1) < 0) { answerTexts.push(ans1); }
+      ['ll5050', 'llPhone', 'llAudience'].forEach(function (id) {
+        bindMillionairePreviewAction(document.getElementById(id), '__EDUPLAY_PREVIEW_LIFELINE_BOUND_' + id, function (event) {
+          try { event.preventDefault(); } catch (e) {}
+        });
+      });
+      bindMillionairePreviewAction(document.getElementById('ll5050'), '__EDUPLAY_PREVIEW_LIFELINE_5050_BOUND', function (event) {
+        try { event.preventDefault(); } catch (e) {}
+      });
+    } catch (e) {
+      console.warn('[Preview] millionaire lifeline binding failed:', e);
+    }
+  }
+
+  var _installMillionairePreviewControls = function () {
+    try {
+      var question = document.getElementById('question');
+      var answerBlocks = [];
+      var answerTexts = [];
+      ['ans1B', 'ans2B', 'ans3B', 'ans4B', 'ans1', 'ans2', 'ans3', 'ans4'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (!el) { return; }
+        if (id.charAt(id.length - 1) === 'B') { answerBlocks.push(el); }
+        else { answerTexts.push(el); }
+      });
+      if (!question || !answerBlocks.length) { return false; }
+      installMillionairePreviewAnswerFallback(question, answerBlocks, answerTexts);
+      bindMillionairePreviewLifelines(question, answerBlocks, answerTexts);
+      return true;
+    } catch (e) { return false; }
+  };
+
+  var _dispatchQuickPreviewLoad = function () {
+    try {
+      var loadEvent = document.createEvent('Event');
+      loadEvent.initEvent('load', false, false);
+      window.dispatchEvent(loadEvent);
+    } catch (e) {}
+    try {
+      var playButton = document.getElementById('playGameBtn');
+      if (playButton) {
+        playButton.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+      }
+    } catch (e) {}
+  };
+
+  var lateBootstrap = function () {
+    try { _installMillionairePreviewControls(); } catch (e) {}
+    try {
+      if (typeof window.__EDUPLAY_QUICK_PREVIEW_MARK_STARTED === 'function' && hasVisibleGameplay()) {
+        window.__EDUPLAY_QUICK_PREVIEW_MARK_STARTED();
+      }
+    } catch (e) {}
+  };
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', lateBootstrap);
+  } else {
+    window.setTimeout(lateBootstrap, 0);
+  }
 })();
 </script>"""
 
@@ -258,7 +427,7 @@ def inject_quick_preview_autostart(html: str, question_index: int = 0) -> str:
     var text = String(value == null ? '' : value).trim();
     if (!text) { return '___'; }
     text = text.replace(
-      /^(?:(?:\s*(?:câu|cau|question|q|pregunta|frage)\s*(?:hỏi|hoi|so)?(?:\s+số)?\s*\d+\s*[:.\-]?\s*))+/i,
+      /^(?:(?:\\s*(?:câu|cau|question|q|pregunta|frage)\\s*(?:hỏi|hoi|so)?(?:\\s+số)?\\s*\\d+\\s*[:.\\-]?\\s*))+/i,
       ''
     ).trim();
     return text || '___';
@@ -616,15 +785,129 @@ def inject_quick_preview_autostart(html: str, question_index: int = 0) -> str:
         }
       };
 
+      // Attempt to auto-play sound as soon as the preview opens. If the
+      // browser/embedded view still blocks it (no user gesture yet), fall back
+      // to starting playback on the first user interaction (button press).
       _enablePreviewAudio().then(function (played) {
         if (played === false) { _installAudioInteractionListeners(); }
       });
+      // Giả lập gesture để Edge/WebView2 cho phép autoplay (như Chrome)
+      setTimeout(function () {
+        var _last = Date.now();
+        document.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
+        document.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+        // Đợi một chút rồi thử phát âm thanh lại
+        setTimeout(function () {
+          try { _enablePreviewAudio().then(function (played) { if (played === true) console.log('[Preview] Audio played after gesture'); }); } catch (e) { console.warn('[Preview] Audio replay failed:', e); }
+        }, 100);
+      }, 400);
     } catch (e) {
       console.error('Không thể tự mở câu hỏi:', e);
     }
   });
 </script>"""
     html = html.replace("</body>", body_end + "</body>")
+    return html
+
+
+def inject_preview_marker(html: str) -> str:
+    """Mark HTML as a preview so embedded game audio is never muted.
+
+    Sets ``window.__EDUPLAY_PREVIEW = true`` for BOTH quick and full previews.
+    The generated game JS uses this flag (instead of the quick-only
+    ``__EDUPLAY_QUICK_PREVIEW_AUTO_START``) to decide whether to create audio
+    elements muted — in any preview we want sound to play immediately.
+
+    *Idempotent*: re-injecting already-marked HTML is a no-op.
+    """
+    html = str(html or "")
+    if not html:
+        return html
+    marker = 'window["__EDUPLAY_PREVIEW"] = true;'
+    if marker in html:
+        return html
+    script = (
+        '<script>try { window["__EDUPLAY_PREVIEW"] = true; } catch (e) {}</script>'
+    )
+    if "<head>" in html:
+        html = html.replace("<head>", "<head>" + script, 1)
+    elif "</head>" in html:
+        html = html.replace("</head>", script + "</head>", 1)
+    elif "<body>" in html:
+        html = html.replace("<body>", script + "<body>", 1)
+    elif "</body>" in html:
+        html = html.replace("</body>", script + "</body>", 1)
+    else:
+        html = html + script
+    return html
+
+
+_PREVIEW_AUDIO_HELPER_JS = """
+(function () {
+  if (window.__EDUPLAY_AUDIO_HELPER_DONE) { return; }
+  window.__EDUPLAY_AUDIO_HELPER_DONE = true;
+  function _audioTargets() {
+    var out = [], seen = [];
+    function add(a){ if(!a||typeof a.play!=='function'||seen.indexOf(a)>=0) return; seen.push(a); out.push(a); }
+    try { var els = document.querySelectorAll('audio'); for (var i=0;i<els.length;i++) { add(els[i]); } } catch(e){}
+    try { if (typeof bgm !== 'undefined') { add(bgm); } } catch(e){}
+    try { if (typeof audioMap !== 'undefined' && audioMap) { Object.keys(audioMap).forEach(function(k){ add(audioMap[k]); }); } } catch(e){}
+    return out;
+  }
+  function _bg() {
+    try { if (typeof bgm !== 'undefined' && bgm) { return bgm; } } catch(e){}
+    try { if (typeof audioMap !== 'undefined' && audioMap && audioMap.bg_question) { return audioMap.bg_question; } } catch(e){}
+    return null;
+  }
+  function _enable() {
+    try { if (typeof setFeedbackSoundPoolsMuted === 'function') { setFeedbackSoundPoolsMuted(false); } } catch(e){}
+    _audioTargets().forEach(function(a){ try { if (a.volume === 0) { a.volume = 0.5; } a.muted = false; } catch(e){} });
+    var bg = _bg();
+    if (!bg) { return; }
+    try { bg.muted = false; if (bg.volume === 0) { bg.volume = 0.5; } var p = bg.play(); if (p && p.catch) { p.catch(function(){}); } } catch(e){}
+  }
+  function _onGesture(){ _enable(); }
+  ['pointerdown','click','touchstart','keydown'].forEach(function(ev){ try { document.addEventListener(ev, _onGesture, { once: true }); } catch(e){} });
+  _enable();
+  // Giả lập gesture để Edge/WebView2 cho phép autoplay (như Chrome)
+  setTimeout(function(){
+    try {
+      document.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, cancelable: true }));
+      document.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    } catch(e){}
+    setTimeout(_enable, 120);
+  }, 400);
+  // Game có thể tự mute bgm sau khi init (vd fishing line 3386) → re-enable định kỳ
+  var _tries = 0;
+  var _iv = setInterval(function(){
+    _tries += 1;
+    _enable();
+    if (_tries >= 12) { try { clearInterval(_iv); } catch(e){} }
+  }, 1000);
+})();
+"""
+
+
+def inject_preview_audio_helper(html: str) -> str:
+    """Inject the audio-unmute/autoplay helper into preview HTML.
+
+    Unmutes and plays every game audio element (including the fishing game's
+    pre-muted ``bgm``) and the background music, with a simulated gesture so
+    Edge/WebView2 allows autoplay. Works for BOTH quick and full previews.
+
+    *Idempotent*: re-injecting already-marked HTML is a no-op.
+    """
+    html = str(html or "")
+    if not html:
+        return html
+    marker = "window.__EDUPLAY_AUDIO_HELPER_DONE"
+    if marker in html:
+        return html
+    script = "<script>" + _PREVIEW_AUDIO_HELPER_JS.strip() + "</script>"
+    if "</body>" in html:
+        html = html.replace("</body>", script + "</body>", 1)
+    else:
+        html = html + script
     return html
 
 

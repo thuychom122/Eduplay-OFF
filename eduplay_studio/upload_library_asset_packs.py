@@ -176,6 +176,34 @@ def upload_library_asset_packs(database_url: str, packs: dict, requests_module=N
         payload = dict(pack.get("payload") or {})
         pack_meta = dict(pack.get("meta") or {})
         now_ts = int(time.time())
+        # Upload-once: skip profiles whose bytes already sit on the server.
+        # Local content sha (pack_key doubles as content hash when the pack
+        # holds assets) is compared against the manifest content_hash that
+        # seeders write; equal + pinned latest => nothing to do.
+        try:
+            _local_assets = dict(pack.get("assets") or {})
+        except Exception:
+            _local_assets = {}
+        _local_sha = pack_key if _local_assets else ""
+        try:
+            _pinned = str(service.LIBRARY_ASSET_PACK_KEYS.get(profile, "") or "").strip()
+        except Exception:
+            _pinned = ""
+        try:
+            _existing_raw = writer.get(f"/asset_pack_libraries/{profile}") or {}
+            _normalized_existing = service._normalize_library_manifest(profile, _existing_raw)
+        except Exception:
+            _normalized_existing = {}
+        try:
+            _server_hash = str((_normalized_existing or {}).get("content_hash") or "").strip()
+            _server_key = str((_normalized_existing or {}).get("key") or "").strip()
+            _server_latest = str((_normalized_existing or {}).get("latest_key") or "").strip()
+        except Exception:
+            _server_hash, _server_key, _server_latest = "", "", ""
+        if (_local_sha and _server_hash and _local_sha == _server_hash
+                and _pinned and _server_key == _pinned and _server_latest == _pinned):
+            stored_manifests[profile] = _normalized_existing
+            continue
         asset_meta = {
             "type": "asset_pack",
             "profile": profile,

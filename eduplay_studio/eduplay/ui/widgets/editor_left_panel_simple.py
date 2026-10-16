@@ -584,7 +584,22 @@ class EditorLeftPanel(QWidget):
             pass
         
     def load_questions(self):
-        """Load questions from current project"""
+        """Load questions from current project - bảo toàn scroll và selection"""
+        prev_row = -1
+        prev_scroll = 0
+        try:
+            prev_row = int(self.questions_list.currentRow())
+        except Exception:
+            prev_row = -1
+        try:
+            vsb = self.questions_list.verticalScrollBar()
+            prev_scroll = int(vsb.value()) if vsb else 0
+        except Exception:
+            prev_scroll = 0
+        try:
+            self.questions_list.blockSignals(True)
+        except Exception:
+            pass
         self.questions_list.clear()
         
         if self.current_project and 'questions' in self.current_project:
@@ -653,20 +668,54 @@ class EditorLeftPanel(QWidget):
                 item.setData(Qt.UserRole, question)  # Store question data
                 self.questions_list.addItem(item)
         
-        # Select first item if available
-        if self.questions_list.count() > 0:
-            self.questions_list.setCurrentRow(0)
-            first_item = self.questions_list.item(0)
-            if first_item:
-                question_data = first_item.data(Qt.UserRole)
-                self.question_selected.emit(question_data)
+        # Khôi phục selection và scroll, chỉ chọn đầu nếu trước đó không có gì
+        try:
+            if self.questions_list.count() > 0:
+                if 0 <= prev_row < self.questions_list.count():
+                    self.questions_list.setCurrentRow(prev_row)
+                    # khôi phục scroll
+                    try:
+                        vsb = self.questions_list.verticalScrollBar()
+                        if vsb:
+                            vsb.setValue(prev_scroll)
+                    except Exception:
+                        pass
+                else:
+                    self.questions_list.setCurrentRow(0)
+                    first_item = self.questions_list.item(0)
+                    if first_item:
+                        question_data = first_item.data(Qt.UserRole)
+                        self.question_selected.emit(question_data)
+            # đảm bảo scroll được khôi phục ngay cả khi giữ nguyên hàng
+            try:
+                vsb = self.questions_list.verticalScrollBar()
+                if vsb and prev_scroll and 0 <= prev_row < self.questions_list.count():
+                    vsb.setValue(prev_scroll)
+            except Exception:
+                pass
+        except Exception:
+            pass
+        try:
+            self.questions_list.blockSignals(False)
+        except Exception:
+            pass
 
     def load_questions_silent(self):
-        """Reload questions without emitting selection to avoid recursion"""
+        """Reload questions without emitting selection to avoid recursion - bảo toàn scroll"""
         try:
             row = self.questions_list.currentRow()
         except Exception:
             row = -1
+        prev_scroll = 0
+        try:
+            vsb = self.questions_list.verticalScrollBar()
+            prev_scroll = int(vsb.value()) if vsb else 0
+        except Exception:
+            prev_scroll = 0
+        try:
+            self.questions_list.blockSignals(True)
+        except Exception:
+            pass
         self.questions_list.clear()
         if self.current_project and 'questions' in self.current_project:
             for i, question in enumerate(self.current_project['questions']):
@@ -728,6 +777,16 @@ class EditorLeftPanel(QWidget):
         try:
             if row >= 0 and row < self.questions_list.count():
                 self.questions_list.setCurrentRow(row)
+                try:
+                    vsb = self.questions_list.verticalScrollBar()
+                    if vsb:
+                        vsb.setValue(prev_scroll)
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        try:
+            self.questions_list.blockSignals(False)
         except Exception:
             pass
             
@@ -1104,11 +1163,23 @@ class EditorLeftPanel(QWidget):
         if "_skeleton" in name:
             wrong_path = sprite_path
             main_guess = sprite_path.replace("_skeleton", "")
-            sprite_candidate = main_guess if os.path.exists(main_guess) else sprite_path
+            try:
+                from eduplay.core.path_resolver import PathResolver as _PR
+                from pathlib import Path as _Pt
+                _exists = (_PR.resolve_user_file(main_guess) is not None) or _Pt(_PR.normalize_user_path(main_guess)).exists() or os.path.exists(main_guess)
+            except Exception:
+                _exists = os.path.exists(main_guess)
+            sprite_candidate = main_guess if _exists else sprite_path
             sprite_path = sprite_candidate
         else:
             wrong_guess = root + "_skeleton" + ext
-            wrong_path = wrong_guess if os.path.exists(wrong_guess) else ''
+            try:
+                from eduplay.core.path_resolver import PathResolver as _PR
+                from pathlib import Path as _Pt
+                _w_exists = (_PR.resolve_user_file(wrong_guess) is not None) or _Pt(_PR.normalize_user_path(wrong_guess)).exists() or os.path.exists(wrong_guess)
+            except Exception:
+                _w_exists = os.path.exists(wrong_guess)
+            wrong_path = wrong_guess if _w_exists else ''
         fish = {'sprite': sprite_path, 'wrong_sprite': wrong_path, 'sound': ''}
         if not hasattr(self, '_fish_objects'):
             self._fish_objects = []

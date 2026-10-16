@@ -95,7 +95,7 @@ class AssetManager:
     
     def scan_bundled_assets(self):
         """Scan and register bundled assets"""
-        assets_bundle_dir = Path(__file__).parent.parent / "assets_bundle"
+        assets_bundle_dir = Path(__file__).parent.parent.parent / "assets_bundle"
         
         if not assets_bundle_dir.exists():
             return
